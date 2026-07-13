@@ -154,10 +154,12 @@ export default function App() {
           <div className="card">
             <div className="card-head attacker"><span className="dot"></span><span className="tag">Firing Unit</span></div>
             <div className="card-body">
-              <div className="field">
-                <label>Ballistic Skill <span className="val">{bs}</span></label>
-                <input type="range" min="1" max="10" step="1" value={bs} onChange={(e) => setBs(Number(e.target.value))} />
-                <div className="hint">{bs >= 10 ? 'Automatic hit' : `Needs ${hitNeed}+ to hit`}</div>
+              <div className="subgrid">
+                <div className="field">
+                  <label>Ballistic Skill (BS)</label>
+                  <input type="number" min="1" max="10" value={bs} onChange={(e) => setBs(Number(e.target.value))} />
+                  <div className="hint">{bs >= 10 ? 'Automatic hit' : `Needs ${hitNeed}+ to hit`}</div>
+                </div>
               </div>
               <div className="subgrid">
                 <div className="field">
