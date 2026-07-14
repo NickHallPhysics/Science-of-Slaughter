@@ -100,7 +100,7 @@ export default function App() {
   const [fp, setFp] = useState(1);
   const [modelsFiring, setModelsFiring] = useState(10);
   const [str, setStr] = useState(4);
-  const [ap, setAp] = useState(1);
+  const [ap, setAp] = useState(5);
   const [dmg, setDmg] = useState(1);
 
   // target unit
@@ -111,6 +111,7 @@ export default function App() {
   const [invuln, setInvuln] = useState(7);
   const [cover, setCover] = useState(7);
 
+  const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
     const hitNeed = needForBS(bs);
     const pHit = pFromNeed(hitNeed);
@@ -131,6 +132,8 @@ export default function App() {
   }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover]);
 
   const { save, hitNeed, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill } = results;
+
+  const modelsChartDist = modelsView === 'cumulative' ? cdfModels : distModels;
 
   let saveHint;
   if (save.saveValue === null) {
@@ -179,12 +182,16 @@ export default function App() {
                 </div>
                 <div className="field">
                   <label>AP</label>
-                  <input type="number" min="0" max="6" value={ap} onChange={(e) => setAp(Number(e.target.value) || 0)} />
+                  <select value={ap} onChange={(e) => setAp(Number(e.target.value) || 0)}>
+                    <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                    <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+                    <option value="7">-</option>
+                  </select>
                 </div>
               </div>
               <div className="field">
-                <label>Damage (D) per wound <span className="val">{dmg}</span></label>
-                <input type="range" min="1" max="10" step="1" value={dmg} onChange={(e) => setDmg(Number(e.target.value))} />
+                <label>Damage (D)</label>
+                <input type="number" min="1" max="20" value={dmg} onChange={(e) => setDmg(Number(e.target.value) || 1)} />
               </div>
             </div>
           </div>
@@ -271,11 +278,30 @@ export default function App() {
 
           <div className="stage final">
             <div className="stage-head">
-              <div><div className="num">Stage 04 — Casualties</div><h2>Models Removed — Cumulative Probability</h2></div>
+              <div>
+                <div className="num">Stage 04 — Casualties</div>
+                <h2>Models Removed — {modelsView === 'cumulative' ? 'Cumulative Probability' : 'Probability'}</h2>
+              </div>
               <div className="mean"><span className="m-label">Expected Kills</span><span className="m-val">{fmtNum(mean(distModels))}</span></div>
             </div>
             <div className="stage-body">
-              <div className="chart-wrap"><BarChart dist={cdfModels} color={COLORS.models} /></div>
+              <div className="toggle-group" role="group" aria-label="Casualty chart view">
+                <button
+                  type="button"
+                  className={`toggle-btn ${modelsView === 'distributive' ? 'active' : ''}`}
+                  onClick={() => setModelsView('distributive')}
+                >
+                  Exactly X models removed
+                </button>
+                <button
+                  type="button"
+                  className={`toggle-btn ${modelsView === 'cumulative' ? 'active' : ''}`}
+                  onClick={() => setModelsView('cumulative')}
+                >
+                  At least X models removed
+                </button>
+              </div>
+              <div className="chart-wrap"><BarChart dist={modelsChartDist} color={COLORS.models} /></div>
               <div className="readout-strip">
                 <div><div className="rl">Hits/Kill needed</div><div className="rv">{hitsPerKill} unsaved wound{hitsPerKill > 1 ? 's' : ''}</div></div>
                 <div><div className="rl">P(&ge;1 model down)</div><div className="rv">{fmtPct(cdfModels[1] ?? 0)}</div></div>

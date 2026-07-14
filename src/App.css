@@ -187,3 +187,17 @@ footer{
   text-align:center; color:var(--text-faint); font-size:11px; letter-spacing:.1em;
   padding:2px 0 14px; text-transform:uppercase;
 }
+
+.toggle-group{
+  display:flex; width:fit-content;
+  border:1px solid var(--border); border-radius:2px; overflow:hidden;
+  margin-bottom:12px;
+}
+.toggle-btn{
+  background:var(--panel-2); color:var(--text-dim); border:none;
+  padding:6px 14px; font-family:var(--mono); font-size:11px;
+  letter-spacing:.05em; text-transform:uppercase; cursor:pointer;
+}
+.toggle-btn + .toggle-btn{ border-left:1px solid var(--border); }
+.toggle-btn.active{ background:var(--brass); color:#f4eed8; }
+.toggle-btn:hover:not(.active){ background:var(--panel); color:var(--text); }
