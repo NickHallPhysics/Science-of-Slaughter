@@ -16,6 +16,14 @@ export const SPECIAL_RULE_DEFINITIONS = [
     defaultValue: 6,
     description: 'Roll ≥ X auto-hits and auto-wounds (treated as a 6 to wound).',
   },
+  {
+    id: 'poisoned',
+    label: 'Poisoned',
+    valueLabel: 'X',
+    options: [2, 3, 4, 5, 6],
+    defaultValue: 6,
+    description: 'Roll ≥ X auto-wounds.',
+  },
   // future rules go here, e.g.:
   // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
 ];

@@ -26,8 +26,15 @@ function applyRendingRule(pHit, pWound, hitNeed, X) {
   return { pHit: newPHit, pWound: newPWound, hitNeed: effectiveHitNeed };
 }
 
+function applyPoisonedRule(pHit, pWound, hitNeed, X) {
+  const pPois = (7 - X) / 6;
+  const newPWound = Math.max(pWound, pPois); // union of two "roll >= threshold" success sets
+  return { pHit, pWound: newPWound, hitNeed };
+}
+
 const RULE_HANDLERS = {
   rending: (pHit, pWound, hitNeed, value) => applyRendingRule(pHit, pWound, hitNeed, value),
+  poisoned: (pHit, pWound, hitNeed, value) => applyPoisonedRule(pHit, pWound, hitNeed, value),
   // future: special_rule: (pHit, pWound, hitNeed, value) => applySpecialRule(pHit, pWound, hitNeed, value),...
 };
 
