@@ -3,6 +3,7 @@ import {
   needForBS,
   pFromNeed,
   needForWound,
+  resolveHitAndWound,
   resolveSave,
   binomialPMF,
   propagate,

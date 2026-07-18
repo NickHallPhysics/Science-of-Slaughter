@@ -12,6 +12,7 @@ import {
   needForBS,
   pFromNeed,
   needForWound,
+  resolveHitAndWound,
   resolveSave,
   binomialPMF,
   propagate,
@@ -19,6 +20,9 @@ import {
   cdfAtLeast,
   computeModelsRemoved,
 } from './lib/combatMath.js';
+import {
+  SPECIAL_RULE_DEFINITIONS,
+} from './lib/specialRules.js';
 
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip);
 
@@ -103,6 +107,25 @@ export default function App() {
   const [ap, setAp] = useState(5);
   const [dmg, setDmg] = useState(1);
 
+  // special rule handelling
+  const [activeRules, setActiveRules] = useState([]); // [{ id, value }]
+
+  const availableRules = SPECIAL_RULE_DEFINITIONS.filter(
+    (def) => !activeRules.some((r) => r.id === def.id)
+  );
+
+  function addRule(id) {
+    const def = SPECIAL_RULE_DEFINITIONS.find((d) => d.id === id);
+    if (!def) return;
+    setActiveRules((prev) => [...prev, { id, value: def.defaultValue }]);
+  }
+  function updateRuleValue(id, value) {
+    setActiveRules((prev) => prev.map((r) => (r.id === id ? { ...r, value } : r)));
+  }
+  function removeRule(id) {
+    setActiveRules((prev) => prev.filter((r) => r.id !== id));
+  }
+  
   // target unit
   const [tough, setTough] = useState(4);
   const [woundsPerModel, setWoundsPerModel] = useState(1);
@@ -113,11 +136,7 @@ export default function App() {
 
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
-    const hitNeed = needForBS(bs);
-    const pHit = pFromNeed(hitNeed);
-
-    const wNeed = needForWound(str, tough);
-    const pWound = wNeed === null ? 0 : (7 - wNeed) / 6;
+    const { pHit, pWound, hitNeed, wNeed } = resolveHitAndWound(bs, str, tough, activeRules);
 
     const save = resolveSave(ap, armour, invuln, cover);
 
@@ -129,7 +148,7 @@ export default function App() {
     const cdfModels = cdfAtLeast(distModels);
 
     return { hitNeed, pHit, wNeed, save, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill };
-  }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover]);
+  }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, activeRules]);
 
   const { save, hitNeed, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill } = results;
 
@@ -193,8 +212,46 @@ export default function App() {
                 <label>Damage (D)</label>
                 <input type="number" min="1" max="20" value={dmg} onChange={(e) => setDmg(Number(e.target.value) || 1)} />
               </div>
+              <div className="divider-label">Special Rules</div>
+                {activeRules.map((rule) => {
+                  const def = SPECIAL_RULE_DEFINITIONS.find((d) => d.id === rule.id);
+                  return (
+                    <div className="rule-row" key={rule.id}>
+                      <span className="rule-name">{def.label}</span>
+                      <select
+                        value={rule.value}
+                        onChange={(e) => updateRuleValue(rule.id, Number(e.target.value))}
+                      >
+                        {def.options.map((v) => (
+                          <option key={v} value={v}>{v}+</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="rule-remove"
+                        onClick={() => removeRule(rule.id)}
+                        aria-label={`Remove ${def.label}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {availableRules.length > 0 && (
+                  <select
+                    className="rule-add"
+                    value=""
+                    onChange={(e) => { if (e.target.value) addRule(e.target.value); }}
+                  >
+                    <option value="">+ Add special rule…</option>
+                    {availableRules.map((def) => (
+                      <option key={def.id} value={def.id}>{def.label}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
             </div>
-          </div>
 
           <div className="card">
             <div className="card-head defender"><span className="dot"></span><span className="tag">Target Unit</span></div>

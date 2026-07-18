@@ -8,6 +8,29 @@
 
 // ---------- to-hit / to-wound tables ----------
 
+import {
+  SPECIAL_RULE_DEFINITIONS,
+} from './specialRules.js';
+
+/** Rules for applying special rules which alter to hit/wound/save probabilities (i.e. Rending, Breaching, etc) */
+function applyRendingRule(pHit, pWound, hitNeed, X) {
+  if (hitNeed === null) {
+    // BS10 auto-hit: assumed roll of 6, always >= X since X <= 6
+    return { pHit: 1, pWound: 1, hitNeed };
+  }
+  const effectiveHitNeed = Math.min(hitNeed, X);
+  const newPHit = pFromNeed(effectiveHitNeed);
+  const pRend = (7 - X) / 6;
+  const pNormalHit = Math.max(0, X - hitNeed) / 6;
+  const newPWound = newPHit > 0 ? (pRend * 1 + pNormalHit * pWound) / newPHit : 0;
+  return { pHit: newPHit, pWound: newPWound, hitNeed: effectiveHitNeed };
+}
+
+const RULE_HANDLERS = {
+  rending: (pHit, pWound, hitNeed, value) => applyRendingRule(pHit, pWound, hitNeed, value),
+  // future: special_rule: (pHit, pWound, hitNeed, value) => applySpecialRule(pHit, pWound, hitNeed, value),...
+};
+
 /** D6 result needed to hit, given Ballistic Skill. Returns null for BS10 (auto-hit). */
 export function needForBS(bs) {
   if (bs <= 1) return 6;
@@ -32,6 +55,36 @@ export function needForWound(S, T) {
   if (diff === -1) return 5;
   if (diff === -2) return 6;
   return null; // S <= T-3: cannot wound
+}
+
+/**
+ * Resolve the combined hit/wound probabilities for an attack, accounting
+ * for special rules (i.e. Rending (X)) if present. Returns the two numbers 
+ * you feed straight into binomialPMF(totalDice, pHit) and propagate(distHits, pWound) —
+ * the rest of the pipeline is unchanged.
+ *
+ * @param {number} bs
+ * @param {number} S
+ * @param {number} T
+ * @param {Array<{id: string, value: number}>} activeRules
+ */
+export function resolveHitAndWound(bs, S, T, activeRules = []) {
+  const hitNeed = needForBS(bs);
+  const wNeed = needForWound(S, T);
+  let pHit = pFromNeed(hitNeed);
+  let pWound = wNeed === null ? 0 : (7 - wNeed) / 6;
+  let effectiveHitNeed = hitNeed;
+
+  for (const rule of activeRules) {
+    const handler = RULE_HANDLERS[rule.id];
+    if (!handler) continue; // unknown/not-yet-implemented rule id: no-op rather than crash
+    const result = handler(pHit, pWound, effectiveHitNeed, rule.value);
+    pHit = result.pHit;
+    pWound = result.pWound;
+    effectiveHitNeed = result.hitNeed;
+  }
+
+  return { pHit, pWound, hitNeed, wNeed };
 }
 
 /**
