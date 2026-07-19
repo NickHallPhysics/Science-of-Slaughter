@@ -1,4 +1,4 @@
-# Fire Solution — Shooting Phase Resolver (React)
+# Science of Slaughter — Shooting Phase Resolver (React)
 
 A React + Vite rebuild of the combat probability calculator. The probability
 math lives in one real module (`src/lib/combatMath.js`) that is imported

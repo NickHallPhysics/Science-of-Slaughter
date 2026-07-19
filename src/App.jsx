@@ -13,6 +13,7 @@ import {
   pFromNeed,
   needForWound,
   resolveHitAndWound,
+  resolveUnsavedGivenHit,
   resolveSave,
   binomialPMF,
   propagate,
@@ -136,37 +137,42 @@ export default function App() {
 
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
-    const { pHit, pWound, hitNeed, wNeed } = resolveHitAndWound(bs, str, tough, activeRules);
+    const { pHit, pWound, pBreachWound, pNoBreachWound, hitNeed, wNeed } =
+  resolveHitAndWound(bs, str, tough, activeRules);
 
-    const save = resolveSave(ap, armour, invuln, cover);
+    const { pUnsavedGivenHit, saveNormal, saveBreach } =
+      resolveUnsavedGivenHit(pBreachWound, pNoBreachWound, ap, armour, invuln, cover);
 
     const totalDice = fp * modelsFiring;
     const distHits = binomialPMF(totalDice, pHit);
-    const distWounds = propagate(distHits, pWound);
-    const distUnsaved = propagate(distWounds, save.pUnsaved);
+    const distWounds = propagate(distHits, pWound);          // Stage 2 — unaffected by breach
+    const distUnsaved = propagate(distHits, pUnsavedGivenHit); // Stage 3 — computed straight from hits
     const { distModels, hitsPerKill } = computeModelsRemoved(distUnsaved, woundsPerModel, dmg, modelsTarget);
     const cdfModels = cdfAtLeast(distModels);
 
-    return { hitNeed, pHit, wNeed, save, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill };
+    return { hitNeed, pHit, wNeed, saveNormal, saveBreach, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill };
   }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, activeRules]);
 
-  const { save, hitNeed, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill } = results;
+  const { saveNormal, saveBreach, hitNeed, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill } = results;
 
   const modelsChartDist = modelsView === 'cumulative' ? cdfModels : distModels;
 
   let saveHint;
-  if (save.saveValue === null) {
+  if (saveNormal.saveValue === null) {
     saveHint = 'No save available — every wound gets through.';
   } else {
-    saveHint = `Best save used: ${save.saveValue}+ (${save.source}).`;
-    if (!save.armourUsable && armour < 7) saveHint += ` Armour negated — AP ${ap} ≤ Armour ${armour}.`;
+    saveHint = `Best save used: ${saveNormal.saveValue}+ (${saveNormal.source}).`;
+    if (!saveNormal.armourUsable && armour < 7) saveHint += ` Armour negated — AP ${ap} ≤ Armour ${armour}.`;
+  }
+  if (saveBreach.saveValue !== saveNormal.saveValue) {
+    saveHint += ` Breached wounds instead use ${saveBreach.saveValue === null ? 'no save' : saveBreach.saveValue + '+ (' + saveBreach.source + ')'}.`;
   }
 
   return (
     <>
       <div className="masthead">
         <p className="eyebrow">Shooting Phase &middot; Infantry vs Infantry</p>
-        <h1>Fire Solution</h1>
+        <h1>Science of Slaughter</h1>
         <p>Set the firing unit's profile and the target's profile below. Every stage of the attack — hit, wound, save, and casualties removed — is recalculated live as a full probability distribution.</p>
       </div>
 

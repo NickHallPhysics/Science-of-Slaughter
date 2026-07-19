@@ -49,39 +49,82 @@ export function needForWound(S, T) {
  * @param {number} T
  * @param {Array<{id: string, value: number}>} activeRules
  */
+/**
+ * @returns {{ pHit, pWound, pBreachWound, pNoBreachWound, hitNeed, wNeed }}
+ * pWound = P(wound | hit) — unchanged meaning from before.
+ * pBreachWound = P(wound AND breach | hit)
+ * pNoBreachWound = P(wound AND NOT breach | hit)
+ * pBreachWound + pNoBreachWound === pWound, always.
+ */
 export function resolveHitAndWound(bs, S, T, activeRules = []) {
   const hitNeed = needForBS(bs);
   const wNeed = needForWound(S, T);
-  const baseWoundP = wNeed === null ? 0 : (7 - wNeed) / 6;
 
   const rendingRule = activeRules.find((r) => r.id === 'rending');
   const poisonedRule = activeRules.find((r) => r.id === 'poisoned');
-  const poisonP = poisonedRule ? (7 - poisonedRule.value) / 6 : 0;
+  const breachingRule = activeRules.find((r) => r.id === 'breaching');
 
-  // BS10: assumed roll is a natural 6.
+  const poisonThreshold = poisonedRule ? poisonedRule.value : 7; // 7 = "never"
+  const wThreshold = wNeed === null ? 7 : wNeed;
+  const m = Math.min(wThreshold, poisonThreshold); // effective wound-success threshold (real die)
+  const X = breachingRule ? breachingRule.value : null; // breach threshold, or null if absent
+
+  // helper: P(a real d6 roll >= threshold), threshold possibly > 6 meaning "never"
+  const pAtLeast = (threshold) => (threshold <= 6 ? (7 - threshold) / 6 : 0);
+
+  // BS10: hit die is assumed to be a natural 6.
   if (hitNeed === null) {
-    // A natural 6 always satisfies Rending(X) for any X in 2-6, so if Rending
-    // is present at all, the wound is automatic regardless of poison.
-    const pWound = rendingRule ? 1 : Math.max(baseWoundP, poisonP);
-    return { pHit: 1, pWound, hitNeed, wNeed };
+    if (rendingRule) {
+      // Natural 6 hit die always satisfies Rending's X (X is always <= 6),
+      // so the wound is forced regardless of Toughness/Poisoned/anything else.
+      return {
+        pHit: 1,
+        pWound: 1,
+        pBreachWound: X !== null ? 1 : 0,
+        pNoBreachWound: X !== null ? 0 : 1,
+        hitNeed, wNeed,
+      };
+    }
+    const pWound = pAtLeast(m);
+    const pBreachWound = X !== null ? pAtLeast(Math.max(m, X)) : 0;
+    return {
+      pHit: 1,
+      pWound,
+      pBreachWound,
+      pNoBreachWound: pWound - pBreachWound,
+      hitNeed, wNeed,
+    };
   }
 
   if (!rendingRule) {
-    // No Rending: poison just competes with the base wound chance, as before.
-    return { pHit: pFromNeed(hitNeed), pWound: Math.max(baseWoundP, poisonP), hitNeed, wNeed };
+    const pHit = pFromNeed(hitNeed);
+    const pWound = pAtLeast(m);
+    const pBreachWound = X !== null ? pAtLeast(Math.max(m, X)) : 0;
+    return { pHit, pWound, pBreachWound, pNoBreachWound: pWound - pBreachWound, hitNeed, wNeed };
   }
 
-  const X = rendingRule.value;
-  const effHitNeed = Math.min(hitNeed, X);
+  // Rending present: split hits into rending-portion (auto-wound, auto-breach) and
+  // normal-portion (real roll, subject to m and X as usual).
+  const Xr = rendingRule.value;
+  const effHitNeed = Math.min(hitNeed, Xr);
   const pHit = pFromNeed(effHitNeed);
 
-  const pRendPortion = (7 - X) / 6;
-  const pNormalPortion = pHit - pRendPortion;
-  const pNormalWound = Math.max(baseWoundP, poisonP);
+  const pRendPortion = pAtLeast(Xr);          // unconditional-per-die
+  const pNormalPortion = pHit - pRendPortion; // unconditional-per-die
 
-  const pWound = pHit > 0 ? (pRendPortion * 1 + pNormalPortion * pNormalWound) / pHit : 0;
+  const pNormalWound = pAtLeast(m);
+  const pNormalBreachWound = X !== null ? pAtLeast(Math.max(m, X)) : 0;
 
-  return { pHit, pWound, hitNeed, wNeed };
+  const pWoundTotal = pRendPortion * 1 + pNormalPortion * pNormalWound;
+  const pBreachWoundTotal = pRendPortion * (X !== null ? 1 : 0) + pNormalPortion * pNormalBreachWound;
+
+  return {
+    pHit,
+    pWound: pHit > 0 ? pWoundTotal / pHit : 0,
+    pBreachWound: pHit > 0 ? pBreachWoundTotal / pHit : 0,
+    pNoBreachWound: pHit > 0 ? (pWoundTotal - pBreachWoundTotal) / pHit : 0,
+    hitNeed, wNeed,
+  };
 }
 
 /**
@@ -102,6 +145,17 @@ export function resolveSave(AP, armour, invuln, cover) {
   const best = candidates.reduce((a, b) => (b.value < a.value ? b : a));
   const pSave = best.value <= 6 ? (7 - best.value) / 6 : 0;
   return { saveValue: best.value, source: best.source, pSave, pUnsaved: 1 - pSave, armourUsable };
+}
+
+/**
+ * Combine breach/no-breach wound probabilities with their respective saves.
+ * Breaching forces AP to 2 for the save roll only — nothing else changes.
+ */
+export function resolveUnsavedGivenHit(pBreachWound, pNoBreachWound, ap, armour, invuln, cover) {
+  const saveNormal = resolveSave(ap, armour, invuln, cover);
+  const saveBreach = resolveSave(2, armour, invuln, cover); // AP2 override
+  const pUnsavedGivenHit = pBreachWound * saveBreach.pUnsaved + pNoBreachWound * saveNormal.pUnsaved;
+  return { pUnsavedGivenHit, saveNormal, saveBreach };
 }
 
 // ---------- probability distributions ----------

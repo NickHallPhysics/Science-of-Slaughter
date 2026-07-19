@@ -24,6 +24,14 @@ export const SPECIAL_RULE_DEFINITIONS = [
     defaultValue: 6,
     description: 'Roll ≥ X auto-wounds.',
   },
+  {
+  id: 'breaching',
+  label: 'Breaching',
+  valueLabel: 'X',
+  options: [2, 3, 4, 5, 6],
+  defaultValue: 6,
+  description: 'A to-wound roll ≥ X sets the wound\'s AP to 2 for its save. A Rending-forced wound (treated as a 6) always breaches.',
+  },
   // future rules go here, e.g.:
   // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
 ];
