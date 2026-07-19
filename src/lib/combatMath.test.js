@@ -174,3 +174,84 @@ describe('computeModelsRemoved', () => {
     expect(distModels.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
   });
 });
+
+describe('resolveHitAndWound — Rending + Poisoned combined', () => {
+  it('matches brute-force enumeration over all 36 (hit-die, wound-die) outcomes', () => {
+    const bs = 4, S = 3, T = 4, X = 5, Y = 5; // hitNeed=3, wNeed=5, rending 5+, poison 5+
+    const hitNeed = needForBS(bs);
+    const wNeed = needForWound(S, T);
+
+    let wins = 0;
+    for (let hitDie = 1; hitDie <= 6; hitDie++) {
+      if (hitDie < hitNeed && hitDie < X) continue; // miss (not saved by rending either)
+      if (hitDie >= X) { wins += 6; continue; } // rending: auto-wound, all 6 wound-die outcomes count
+      // normal hit: roll a wound die
+      for (let woundDie = 1; woundDie <= 6; woundDie++) {
+        if (woundDie >= wNeed || woundDie >= Y) wins += 1;
+      }
+    }
+    const expected = wins / 36;
+
+    const r = resolveHitAndWound(bs, S, T, [
+      { id: 'rending', value: X },
+      { id: 'poisoned', value: Y },
+    ]);
+    // r.pWound is conditional on a hit; multiply by pHit to get the unconditional "wins" probability
+    expect(r.pHit * r.pWound).toBeCloseTo(expected, 9);
+  });
+
+  it('Rending guarantees the wound even when Poisoned is a worse threshold', () => {
+    // Rending 4+, Poisoned only 6+ (worse than rending's guarantee)
+    const r = resolveHitAndWound(4, 1, 20, [
+      { id: 'rending', value: 4 },
+      { id: 'poisoned', value: 6 },
+    ]);
+    // Normal wound chance is 0 here (S far below T), but rending covers d=4,5,6, poison only helps d=3 (normal hit zone)
+    // hitNeed=3, so effHitNeed = min(3,4) = 3. pHit = 4/6.
+    // Rending portion: d>=4 -> 3/6. Normal portion: d=3 only -> 1/6.
+    // Normal-hit wound chance: max(0, poisonP=1/6) = 1/6.
+    const expected = (3 * 1 + 1 * (1 / 6)) / 4; // = (3 + 1/6)/4
+    expect(r.pWound).toBeCloseTo(expected, 9);
+  });
+
+  it('Poisoned helps only the non-rending slice, not the whole blend', () => {
+    // This is the case that distinguishes exact math from the old sequential/max approach.
+    const r = resolveHitAndWound(4, 4, 4, [
+      { id: 'rending', value: 6 },   // only a natural 6 rends
+      { id: 'poisoned', value: 2 },  // poison is very strong: 2+
+    ]);
+    const hitNeed = 3; // BS4
+    const wNeed = 4;   // S4 vs T4
+    const pHit = (7 - hitNeed) / 6;
+    const pRend = (7 - 6) / 6;             // 1/6
+    const pNormal = pHit - pRend;          // 3/6
+    const pNormalWound = Math.max((7 - wNeed) / 6, (7 - 2) / 6); // max(0.5, 5/6) = 5/6
+    const expected = (pRend * 1 + pNormal * pNormalWound) / pHit;
+    expect(r.pWound).toBeCloseTo(expected, 9);
+
+    // Sanity: this should NOT equal the old (wrong) sequential approach,
+    // which would have been max(blended-without-poison, poisonP).
+    const blendedWithoutPoison = (pRend * 1 + pNormal * ((7 - wNeed) / 6)) / pHit;
+    const oldWrongAnswer = Math.max(blendedWithoutPoison, (7 - 2) / 6);
+    expect(r.pWound).not.toBeCloseTo(oldWrongAnswer, 9);
+  });
+
+  it('reduces to Rending-only when no Poisoned rule is present', () => {
+    const withRendingOnly = resolveHitAndWound(4, 4, 4, [{ id: 'rending', value: 5 }]);
+    const combined = resolveHitAndWound(4, 4, 4, [{ id: 'rending', value: 5 }]);
+    expect(combined.pWound).toBeCloseTo(withRendingOnly.pWound, 9);
+  });
+
+  it('reduces to Poisoned-only when no Rending rule is present', () => {
+    const withPoisonOnly = resolveHitAndWound(4, 4, 4, [{ id: 'poisoned', value: 3 }]);
+    expect(withPoisonOnly.pWound).toBeCloseTo(Math.max((7 - needForWound(4, 4)) / 6, (7 - 3) / 6), 9);
+  });
+
+  it('BS10 with Rending present: auto-wound regardless of Poisoned value', () => {
+    const r = resolveHitAndWound(10, 1, 20, [
+      { id: 'rending', value: 6 },
+      { id: 'poisoned', value: 6 }, // weak poison, shouldn't matter — rending already guarantees it
+    ]);
+    expect(r.pWound).toBe(1);
+  });
+});

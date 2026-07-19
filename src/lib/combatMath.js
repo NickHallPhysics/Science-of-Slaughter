@@ -12,32 +12,6 @@ import {
   SPECIAL_RULE_DEFINITIONS,
 } from './specialRules.js';
 
-/** Rules for applying special rules which alter to hit/wound/save probabilities (i.e. Rending, Breaching, etc) */
-function applyRendingRule(pHit, pWound, hitNeed, X) {
-  if (hitNeed === null) {
-    // BS10 auto-hit: assumed roll of 6, always >= X since X <= 6
-    return { pHit: 1, pWound: 1, hitNeed };
-  }
-  const effectiveHitNeed = Math.min(hitNeed, X);
-  const newPHit = pFromNeed(effectiveHitNeed);
-  const pRend = (7 - X) / 6;
-  const pNormalHit = Math.max(0, X - hitNeed) / 6;
-  const newPWound = newPHit > 0 ? (pRend * 1 + pNormalHit * pWound) / newPHit : 0;
-  return { pHit: newPHit, pWound: newPWound, hitNeed: effectiveHitNeed };
-}
-
-function applyPoisonedRule(pHit, pWound, hitNeed, X) {
-  const pPois = (7 - X) / 6;
-  const newPWound = Math.max(pWound, pPois); // union of two "roll >= threshold" success sets
-  return { pHit, pWound: newPWound, hitNeed };
-}
-
-const RULE_HANDLERS = {
-  rending: (pHit, pWound, hitNeed, value) => applyRendingRule(pHit, pWound, hitNeed, value),
-  poisoned: (pHit, pWound, hitNeed, value) => applyPoisonedRule(pHit, pWound, hitNeed, value),
-  // future: special_rule: (pHit, pWound, hitNeed, value) => applySpecialRule(pHit, pWound, hitNeed, value),...
-};
-
 /** D6 result needed to hit, given Ballistic Skill. Returns null for BS10 (auto-hit). */
 export function needForBS(bs) {
   if (bs <= 1) return 6;
@@ -78,18 +52,34 @@ export function needForWound(S, T) {
 export function resolveHitAndWound(bs, S, T, activeRules = []) {
   const hitNeed = needForBS(bs);
   const wNeed = needForWound(S, T);
-  let pHit = pFromNeed(hitNeed);
-  let pWound = wNeed === null ? 0 : (7 - wNeed) / 6;
-  let effectiveHitNeed = hitNeed;
+  const baseWoundP = wNeed === null ? 0 : (7 - wNeed) / 6;
 
-  for (const rule of activeRules) {
-    const handler = RULE_HANDLERS[rule.id];
-    if (!handler) continue; // unknown/not-yet-implemented rule id: no-op rather than crash
-    const result = handler(pHit, pWound, effectiveHitNeed, rule.value);
-    pHit = result.pHit;
-    pWound = result.pWound;
-    effectiveHitNeed = result.hitNeed;
+  const rendingRule = activeRules.find((r) => r.id === 'rending');
+  const poisonedRule = activeRules.find((r) => r.id === 'poisoned');
+  const poisonP = poisonedRule ? (7 - poisonedRule.value) / 6 : 0;
+
+  // BS10: assumed roll is a natural 6.
+  if (hitNeed === null) {
+    // A natural 6 always satisfies Rending(X) for any X in 2-6, so if Rending
+    // is present at all, the wound is automatic regardless of poison.
+    const pWound = rendingRule ? 1 : Math.max(baseWoundP, poisonP);
+    return { pHit: 1, pWound, hitNeed, wNeed };
   }
+
+  if (!rendingRule) {
+    // No Rending: poison just competes with the base wound chance, as before.
+    return { pHit: pFromNeed(hitNeed), pWound: Math.max(baseWoundP, poisonP), hitNeed, wNeed };
+  }
+
+  const X = rendingRule.value;
+  const effHitNeed = Math.min(hitNeed, X);
+  const pHit = pFromNeed(effHitNeed);
+
+  const pRendPortion = (7 - X) / 6;
+  const pNormalPortion = pHit - pRendPortion;
+  const pNormalWound = Math.max(baseWoundP, poisonP);
+
+  const pWound = pHit > 0 ? (pRendPortion * 1 + pNormalPortion * pNormalWound) / pHit : 0;
 
   return { pHit, pWound, hitNeed, wNeed };
 }
