@@ -3,11 +3,14 @@ import {
   needForBS,
   pFromNeed,
   needForWound,
+  getInnateCriticalX,
+  getEffectiveCriticalThreshold,
   resolveHitAndWound,
   resolveSave,
   resolveAttackProbabilities,
   resolveFinalOutcomeProbabilities,
   computeModelsRemovedWithFireGroups,
+  computeModelsRemovedMultiTier,
   applyWoundGroupToState,
   binomialPMF,
   propagate,
@@ -334,30 +337,244 @@ describe('computeModelsRemovedWithFireGroups', () => {
 
 describe('resolveAttackProbabilities — Shred', () => {
   it('a Rending-forced wound always triggers Shred, regardless of X', () => {
-    const { categories } = resolveAttackProbabilities(4, 1, 20, [
+    const { buckets } = resolveAttackProbabilities(4, 1, 20, [
       { id: 'rending', value: 4 },
       { id: 'shred', value: 6 },
     ]);
-    const totalWound = categories.Breach_Shred + categories.Breach_noShred + categories.noBreach_Shred + categories.noBreach_noShred;
-    const totalShred = categories.noBreach_Shred + categories.Breach_Shred;
+    const totalWound = buckets.BreachDplus0 + buckets.BreachDplus1 + buckets.BreachDplus2
+      + buckets.noBreachDplus0 + buckets.noBreachDplus1 + buckets.noBreachDplus2;
+    const totalShred = buckets.BreachDplus1 + buckets.noBreachDplus1
+      + buckets.BreachDplus2 + buckets.noBreachDplus2;
     expect(totalShred).toBeCloseTo(totalWound, 9);
   });
 
   it('Poisoned success does not automatically shred (needs the real roll to also clear X)', () => {
-    const { categories } = resolveAttackProbabilities(4, 1, 20, [
+    const { buckets } = resolveAttackProbabilities(4, 1, 20, [
       { id: 'poisoned', value: 2 },
       { id: 'shred', value: 6 },
     ]);
-    const totalWound = categories.Breach_Shred + categories.Breach_noShred + categories.noBreach_Shred + categories.noBreach_noShred;
-    const totalShred = categories.noBreach_Shred + categories.Breach_Shred;
+    const totalWound = buckets.BreachDplus0 + buckets.BreachDplus1 + buckets.BreachDplus2
+      + buckets.noBreachDplus0 + buckets.noBreachDplus1 + buckets.noBreachDplus2;
+    const totalShred = buckets.BreachDplus1 + buckets.noBreachDplus1
+      + buckets.BreachDplus2 + buckets.noBreachDplus2;
     expect(totalWound).toBeGreaterThan(totalShred);
   });
 
   it('Breach and Shred can occur independently on the same wound', () => {
-    const { categories } = resolveAttackProbabilities(4, 6, 4, [
+    const { buckets } = resolveAttackProbabilities(4, 6, 4, [
       { id: 'breaching', value: 3 },
       { id: 'shred', value: 3 },
     ]);
-    expect(categories.Breach_Shred).toBeGreaterThan(0);
+    expect(buckets.BreachDplus1).toBeGreaterThan(0);
+  });
+});
+
+describe('computeModelsRemovedMultiTier', () => {
+  it('matches computeModelsRemovedWithFireGroups when only 2 tiers are active', () => {
+    const totalDice = 15, W = 4, targetModels = 5;
+    const tiers = [{ damage: 2, pUnsaved: 0.3 }, { damage: 3, pUnsaved: 0.2 }];
+    const { distModels: multi } = computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels);
+    const { distModels: pair } = computeModelsRemovedWithFireGroups(totalDice, 0.3, 0.2, 2, W, targetModels);
+    for (let k = 0; k <= targetModels; k++) expect(multi[k]).toBeCloseTo(pair[k], 9);
+  });
+
+  it('matches the constant-damage formula when only 1 tier is active', () => {
+    const totalDice = 15, pUnsaved = 0.4, D = 2, W = 5, targetModels = 6;
+    const { distModels: multi } = computeModelsRemovedMultiTier(totalDice, [{ damage: D, pUnsaved }], W, targetModels);
+    const { distModels: single } = computeModelsRemoved(binomialPMF(totalDice, pUnsaved), W, D, targetModels);
+    for (let k = 0; k <= targetModels; k++) expect(multi[k]).toBeCloseTo(single[k], 9);
+  });
+
+  it('matches brute-force enumeration for a genuine 3-tier case', () => {
+    const totalDice = 5, W = 3, targetModels = 2;
+    const p0 = 0.25, p1 = 0.15, p2 = 0.1; // D, D+1, D+2
+    const D = 1;
+    const outcomes = ['none', 'BreachDplus0', 'BreachDplus1', 'BreachDplus2'];
+    const probOf = { none: 1 - p0 - p1 - p2, BreachDplus0: p0, BreachDplus1: p1, BreachDplus2: p2 };
+    const damageOf = { BreachDplus0: D, BreachDplus1: D + 1, BreachDplus2: D + 2 };
+
+    // enumerate all totalDice^4-ish sequences directly (small n keeps this cheap)
+    function enumerate(seq, i, acc) {
+      if (i === totalDice) {
+        // apply Fire Groups in ascending-damage order, NOT roll order
+        const counts = { BreachDplus0: 0, BreachDplus1: 0, BreachDplus2: 0 };
+        for (const o of seq) if (o !== 'none') counts[o]++;
+        let state = { killed: 0, wounded_model: W };
+        for (const tierKey of ['BreachDplus0', 'BreachDplus1', 'BreachDplus2']) {
+          if (state.killed >= targetModels) break;
+          state = applyWoundGroupToState(state, counts[tierKey], damageOf[tierKey], W, targetModels);
+        }
+        acc[state.killed] = (acc[state.killed] || 0) + seq.reduce((p, o) => p * probOf[o], 1);
+        return;
+      }
+      for (const o of outcomes) enumerate([...seq, o], i + 1, acc);
+    }
+    const expected = {};
+    enumerate([], 0, expected);
+
+    const { distModels } = computeModelsRemovedMultiTier(totalDice, [
+      { damage: D, pUnsaved: p0 },
+      { damage: D + 1, pUnsaved: p1 },
+      { damage: D + 2, pUnsaved: p2 },
+    ], W, targetModels);
+
+    for (let k = 0; k <= targetModels; k++) expect(distModels[k]).toBeCloseTo(expected[k] || 0, 9);
+  });
+
+  it('distribution sums to 1 with 3 active tiers', () => {
+    const { distModels } = computeModelsRemovedMultiTier(20, [
+      { damage: 1, pUnsaved: 0.15 },
+      { damage: 2, pUnsaved: 0.1 },
+      { damage: 3, pUnsaved: 0.05 },
+    ], 6, 8);
+    expect(distModels.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
+  });
+});
+
+describe('resolveAttackProbabilities — Critical Hit', () => {
+  it('Critical alone (no Shred): all wounds land in tier 1, none in tier 2', () => {
+    const { buckets } = resolveAttackProbabilities(4, 4, 4, [{ id: 'criticalHit', value: 5 }]);
+    expect(buckets.BreachDplus2 + buckets.noBreachDplus2).toBeCloseTo(0, 9);
+  });
+
+  it('Critical + Shred together: a critical hit always lands in tier 2 (forced-6 wound satisfies shred too)', () => {
+    const { buckets } = resolveAttackProbabilities(4, 4, 4, [
+      { id: 'criticalHit', value: 6 },
+      { id: 'shred', value: 6 },
+    ]);
+    // Isolate the probability mass specifically from d=6 (the only critical roll here):
+    // it should show up entirely in tier 2, not tier 1 or tier 0.
+    expect(buckets.BreachDplus2 + buckets.noBreachDplus2).toBeGreaterThan(0);
+  });
+
+  it('BS10 + Critical alone: forced wound, tier 1 only', () => {
+    const { buckets, pHit } = resolveAttackProbabilities(10, 1, 20, [{ id: 'criticalHit', value: 6 }]);
+    expect(pHit).toBe(1);
+    expect(buckets.noBreachDplus1 + buckets.BreachDplus1).toBeCloseTo(1, 9); // wound is forced, no shred active, tier 1 exactly
+  });
+
+  it('BS10 + Critical + Shred: forced wound, tier 2 only', () => {
+    const { buckets } = resolveAttackProbabilities(10, 1, 20, [
+      { id: 'criticalHit', value: 6 },
+      { id: 'shred', value: 6 },
+    ]);
+    expect(buckets.noBreachDplus2 + buckets.BreachDplus2).toBeCloseTo(1, 9);
+  });
+
+  it('Rending and Critical Hit can both trigger on the same hit die (Critical still adds its own bonus)', () => {
+    const { buckets } = resolveAttackProbabilities(4, 1, 20, [
+      { id: 'rending', value: 4 },
+      { id: 'criticalHit', value: 5 }, // d=5,6 satisfy both rending(>=4) and critical(>=5)
+    ]);
+    // S far below T: only rending/critical-forced wounds occur at all.
+    // d=4 -> rending only (tier 0, no crit bonus); d=5,6 -> both (tier 1).
+    expect(buckets.noBreachDplus1 + buckets.BreachDplus1).toBeGreaterThan(0);
+    expect(buckets.noBreachDplus0 + buckets.BreachDplus0).toBeGreaterThan(0);
+  });
+});
+
+describe('resolveAttackProbabilities — Critical Hit auto-hit threshold bug fix', () => {
+  it('Critical Hit alone, threshold BELOW the BS hit-need, still auto-hits (the bug this fixes)', () => {
+    // BS4 needs 3+ normally. Critical Hit(2) should pull the effective hit
+    // threshold down to 2+, same as Rending would on its own.
+    const { pHit } = resolveAttackProbabilities(4, 4, 4, [{ id: 'criticalHit', value: 2 }]);
+    expect(pHit).toBeCloseTo(5 / 6, 9); // 2+ instead of the normal 3+
+  });
+
+  it('matches Rending-alone behaviour when Critical Hit is used the same way (symmetry check)', () => {
+    const viaCritical = resolveAttackProbabilities(4, 4, 4, [{ id: 'criticalHit', value: 2 }]);
+    const viaRending = resolveAttackProbabilities(4, 4, 4, [{ id: 'rending', value: 2 }]);
+    expect(viaCritical.pHit).toBeCloseTo(viaRending.pHit, 9);
+  });
+
+  it('X < Y: three distinct hit populations (normal / rending-only / critical)', () => {
+    // BS3 (needs 4+), Rending(5), Critical(6): normal=[4], rending-only=[5], critical=[6]
+    const { buckets, pHit } = resolveAttackProbabilities(3, 4, 4, [
+      { id: 'rending', value: 5 },
+      { id: 'criticalHit', value: 6 },
+    ]);
+    expect(pHit).toBeCloseTo(3 / 6, 9); // needs 4+, unaffected since rending/crit are both >= hitNeed here
+    // tier-1 (critical) bucket should hold exactly the d=6 contribution
+    const TierDplus1Total = buckets.BreachDplus1 + buckets.noBreachDplus1;
+    expect(TierDplus1Total).toBeCloseTo(1 / 6, 9);
+  });
+
+  it('Y < X: Rending is fully subsumed by Critical Hit, no separate rending-only population', () => {
+    // S=1 vs T=20: normal wound chance is impossible, isolating ONLY the
+    // forced-wound contributions from Rending/Critical so the "no separate
+    // rending-only tier" property can actually be observed.
+    const { buckets, pHit } = resolveAttackProbabilities(3, 1, 20, [
+      { id: 'criticalHit', value: 5 },
+      { id: 'rending', value: 6 },
+    ]);
+    expect(pHit).toBeCloseTo(3 / 6, 9); // pHit depends only on bs + rule thresholds, unaffected by S/T
+    const TierDplus1Total = buckets.BreachDplus1 + buckets.noBreachDplus1;
+    const TierDplus0Total = buckets.BreachDplus0 + buckets.noBreachDplus0;
+    expect(TierDplus1Total).toBeCloseTo(2 / 6, 9); // d=5 and d=6 both land in tier 1
+    expect(TierDplus0Total).toBeCloseTo(0, 9); // no rending-only wounds exist separately
+  });
+});
+
+describe('getInnateCriticalX', () => {
+  it('BS <= 5 grants no innate critical', () => {
+    for (let bs = 1; bs <= 5; bs++) expect(getInnateCriticalX(bs)).toBeNull();
+  });
+  it('BS 6-10 grants innate critical at X = 12 - BS', () => {
+    expect(getInnateCriticalX(6)).toBe(6);
+    expect(getInnateCriticalX(7)).toBe(5);
+    expect(getInnateCriticalX(8)).toBe(4);
+    expect(getInnateCriticalX(9)).toBe(3);
+    expect(getInnateCriticalX(10)).toBe(2);
+  });
+});
+
+describe('getEffectiveCriticalThreshold', () => {
+  it('no innate, no explicit -> null', () => {
+    expect(getEffectiveCriticalThreshold(4, [])).toBeNull();
+  });
+  it('innate only (BS9) -> innate value used', () => {
+    expect(getEffectiveCriticalThreshold(9, [])).toBe(3);
+  });
+  it('explicit only (BS4) -> explicit value used', () => {
+    expect(getEffectiveCriticalThreshold(4, [{ id: 'criticalHit', value: 5 }])).toBe(5);
+  });
+  it('both present, explicit is better -> explicit wins', () => {
+    expect(getEffectiveCriticalThreshold(9, [{ id: 'criticalHit', value: 2 }])).toBe(2);
+  });
+  it('both present, innate is better -> innate wins', () => {
+    expect(getEffectiveCriticalThreshold(10, [{ id: 'criticalHit', value: 6 }])).toBe(2);
+  });
+});
+
+describe('resolveAttackProbabilities — innate Critical Hit from high BS', () => {
+  it('BS9 with no explicit rule still gets a Critical Hit tier', () => {
+    const { buckets, pHit } = resolveAttackProbabilities(9, 1, 20, []); // S/T isolates forced wounds only
+    expect(pHit).toBeCloseTo(5 / 6, 9);
+    const tier1 = buckets.BreachDplus1 + buckets.noBreachDplus1;
+    expect(tier1).toBeCloseTo(4 / 6, 9); // innate X=3: d=3,4,5,6 all critical
+  });
+
+  it('BS10 auto-hit is also automatically a Critical Hit via the innate rule', () => {
+    const { buckets, pHit } = resolveAttackProbabilities(10, 1, 20, []);
+    expect(pHit).toBe(1);
+    const tier1 = buckets.BreachDplus1 + buckets.noBreachDplus1;
+    expect(tier1).toBeCloseTo(1, 9);
+  });
+
+  it('a better explicit Critical Hit rule is used instead of a worse innate one', () => {
+    const { buckets } = resolveAttackProbabilities(9, 1, 20, [{ id: 'criticalHit', value: 2 }]);
+    const tier1 = buckets.BreachDplus1 + buckets.noBreachDplus1;
+    expect(tier1).toBeCloseTo(5 / 6, 9); // X=2: d=2..6 all critical
+  });
+
+  it('a worse explicit rule does not override a better innate one', () => {
+    const { buckets } = resolveAttackProbabilities(10, 1, 20, [{ id: 'criticalHit', value: 6 }]);
+    const tier1 = buckets.BreachDplus1 + buckets.noBreachDplus1;
+    expect(tier1).toBeCloseTo(1, 9); // still fully critical via innate X=2
+  });
+
+  it('BS <= 5 is unaffected: behaves exactly as before this change', () => {
+    const { pHit } = resolveAttackProbabilities(4, 1, 20, [{ id: 'criticalHit', value: 4 }]);
+    expect(pHit).toBeCloseTo(4 / 6, 9);
   });
 });

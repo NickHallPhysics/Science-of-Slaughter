@@ -66,8 +66,8 @@ export function resolveHitAndWound(bs, S, T, activeRules = []) {
 
   const poisonThreshold = poisonedRule ? poisonedRule.value : 7; // 7 = "never"
   const wThreshold = wNeed === null ? 7 : wNeed;
-  const m = Math.min(wThreshold, poisonThreshold); // effective wound-success threshold (real die)
-  const X = breachingRule ? breachingRule.value : null; // breach threshold, or null if absent
+  const effWThreshold = Math.min(wThreshold, poisonThreshold); // effective wound-success threshold (real die)
+  const breachThreshold = breachingRule ? breachingRule.value : null; // breach threshold, or null if absent
 
   // helper: P(a real d6 roll >= threshold), threshold possibly > 6 meaning "never"
   const pAtLeast = (threshold) => (threshold <= 6 ? (7 - threshold) / 6 : 0);
@@ -80,13 +80,13 @@ export function resolveHitAndWound(bs, S, T, activeRules = []) {
       return {
         pHit: 1,
         pWound: 1,
-        pBreachWound: X !== null ? 1 : 0,
-        pNoBreachWound: X !== null ? 0 : 1,
+        pBreachWound: breachThreshold !== null ? 1 : 0,
+        pNoBreachWound: breachThreshold !== null ? 0 : 1,
         hitNeed, wNeed,
       };
     }
-    const pWound = pAtLeast(m);
-    const pBreachWound = X !== null ? pAtLeast(Math.max(m, X)) : 0;
+    const pWound = pAtLeast(effWThreshold);
+    const pBreachWound = breachThreshold !== null ? pAtLeast(Math.max(effWThreshold, breachThreshold)) : 0;
     return {
       pHit: 1,
       pWound,
@@ -98,8 +98,8 @@ export function resolveHitAndWound(bs, S, T, activeRules = []) {
 
   if (!rendingRule) {
     const pHit = pFromNeed(hitNeed);
-    const pWound = pAtLeast(m);
-    const pBreachWound = X !== null ? pAtLeast(Math.max(m, X)) : 0;
+    const pWound = pAtLeast(effWThreshold);
+    const pBreachWound = breachThreshold !== null ? pAtLeast(Math.max(effWThreshold, breachThreshold)) : 0;
     return { pHit, pWound, pBreachWound, pNoBreachWound: pWound - pBreachWound, hitNeed, wNeed };
   }
 
@@ -112,11 +112,11 @@ export function resolveHitAndWound(bs, S, T, activeRules = []) {
   const pRendPortion = pAtLeast(Xr);          // unconditional-per-die
   const pNormalPortion = pHit - pRendPortion; // unconditional-per-die
 
-  const pNormalWound = pAtLeast(m);
-  const pNormalBreachWound = X !== null ? pAtLeast(Math.max(m, X)) : 0;
+  const pNormalWound = pAtLeast(effWThreshold);
+  const pNormalBreachWound = breachThreshold !== null ? pAtLeast(Math.max(effWThreshold, breachThreshold)) : 0;
 
   const pWoundTotal = pRendPortion * 1 + pNormalPortion * pNormalWound;
-  const pBreachWoundTotal = pRendPortion * (X !== null ? 1 : 0) + pNormalPortion * pNormalBreachWound;
+  const pBreachWoundTotal = pRendPortion * (breachThreshold !== null ? 1 : 0) + pNormalPortion * pNormalBreachWound;
 
   return {
     pHit,
@@ -222,26 +222,38 @@ export function cdfAtLeast(dist) {
 // ---------- casualty mapping ----------
 
 /**
- * Map a distribution of unsaved-wound counts to a distribution of models
- * removed. A model dies after ceil(W/D) unsaved wounds; damage does not
- * spill over to the next model; kills are capped at targetModels.
+ * BS values above 5 grant an innate Critical Hit(X) with X = 12 - BS.
+ * Values of X above 6 are ignored (not achievable on a d6). Returns null
+ * for BS <= 5, where no innate bonus applies.
  */
-export function computeModelsRemoved(distUnsaved, W, D, targetModels) {
-  const hitsPerKill = Math.ceil(W / D);
-  const N = distUnsaved.length - 1;
-  const distModels = new Array(targetModels + 1).fill(0);
-  for (let k = 0; k <= N; k++) {
-    const killed = Math.min(Math.floor(k / hitsPerKill), targetModels);
-    distModels[killed] += distUnsaved[k];
-  }
-  return { distModels, hitsPerKill };
+export function getInnateCriticalX(bs) {
+  if (bs <= 5) return null;
+  const critThreshold = 12 - bs;
+  if (critThreshold > 6) return null;
+  if (critThreshold < 2) return 2; // defensive floor; only reachable if bs is pushed past the normal 1-10 range
+  return critThreshold;
 }
 
 /**
- * Resolves hit/wound probabilities plus the joint (breach, shred) category
- * split needed downstream. categories.XY absolute probabilities (already
- * include pHit) — not conditional on a hit — where X = breach T/F and
- * Y = shred T/F, e.g. categories.Breach_noShred = breach-only, categories.noBreach_Shred = shred-only.
+ * The effective Critical Hit(X) threshold for a weapon/unit: the better
+ * (lower) of any explicit Critical Hit special rule and the innate
+ * Critical Hit granted by high Ballistic Skill. Returns null if neither
+ * applies.
+ */
+export function getEffectiveCriticalThreshold(bs, activeRules = []) {
+  const criticalRule = activeRules.find((r) => r.id === 'criticalHit');
+  const innateX = getInnateCriticalX(bs);
+  const explicitX = criticalRule ? criticalRule.value : null;
+  const candidates = [innateX, explicitX].filter((x) => x !== null);
+  return candidates.length > 0 ? Math.min(...candidates) : null;
+}
+
+/**
+ * Resolves hit/wound probabilities plus a joint breakdown by (breach T/F)
+ * x (damage-bonus tier 0/1/2). Damage-bonus tier: 0 = no bonus, 1 = exactly
+ * one of {Critical, Shred} triggered, 2 = both triggered on the same wound.
+ * All bucket values are ABSOLUTE probabilities (already include pHit), not
+ * conditional on a hit.
  */
 export function resolveAttackProbabilities(bs, S, T, activeRules = []) {
   const hitNeed = needForBS(bs);
@@ -252,70 +264,96 @@ export function resolveAttackProbabilities(bs, S, T, activeRules = []) {
   const breachingRule = activeRules.find((r) => r.id === 'breaching');
   const shredRule = activeRules.find((r) => r.id === 'shred');
 
-  const poisonThreshold = poisonedRule ? poisonedRule.value : 7; // 7 = never
+  const poisonThreshold = poisonedRule ? poisonedRule.value : 7;
   const wThreshold = wNeed === null ? 7 : wNeed;
-  const m = Math.min(wThreshold, poisonThreshold); // effective wound-success threshold on the real die
+  const effWThreshold = Math.min(wThreshold, poisonThreshold);
   const Xbreach = breachingRule ? breachingRule.value : null;
   const Xshred = shredRule ? shredRule.value : null;
+  const Xrend = rendingRule ? rendingRule.value : null;
+  const Xcrit = getEffectiveCriticalThreshold(bs, activeRules);
 
-  // Enumerate the wound die (1-6) once. bucket[key] = ABSOLUTE probability
-  // (over a single random wound die) that a wound occurs AND falls into
-  // that (breach, shred) combination.
-  const bucket = { Breach_Shred: 0, Breach_noShred: 0, noBreach_Shred: 0, noBreach_noShred: 0 };
-  for (let d = 1; d <= 6; d++) {
-    if (d < m) continue; // no wound at all on this face
-    const breach = Xbreach !== null && d >= Xbreach;
-    const shred = Xshred !== null && d >= Xshred;
-    bucket[(breach ? 'Breach' : 'noBreach') + "_" + (shred ? 'Shred' : 'noShred')] += 1 / 6;
-  }
+  
+  const buckets = { BreachDplus0: 0, BreachDplus1: 0, BreachDplus2: 0, noBreachDplus0: 0, noBreachDplus1: 0, noBreachDplus2: 0 };
 
-  let pHit, pRendPortion, pNormalPortion;
+  const TIER_SUFFIX = { 0: 'Dplus0', 1: 'Dplus1', 2: 'Dplus2' };
+  const addWound = (breach, dmgBonus, prob) => {
+    const key = (breach ? 'Breach' : 'noBreach') + TIER_SUFFIX[dmgBonus];
+    buckets[key] += prob;
+  };
+
+  const classifyWoundDie = (d2, forceShred) => {
+    if (d2 < effWThreshold) return null;
+    const breach = Xbreach !== null && d2 >= Xbreach;
+    const shred = forceShred || (Xshred !== null && d2 >= Xshred);
+    return { breach, shred };
+  };
+
+  let pHit;
+
   if (hitNeed === null) {
-    // BS10: hit die assumed = 6.
+    // BS10: hit die assumed to be a natural 6.
     pHit = 1;
-    pRendPortion = rendingRule ? 1 : 0; // natural 6 always satisfies rending's X (X <= 6)
-    pNormalPortion = rendingRule ? 0 : 1;
-  } else if (!rendingRule) {
-    pHit = pFromNeed(hitNeed);
-    pRendPortion = 0;
-    pNormalPortion = pHit;
+    const isRending = !!rendingRule;
+    const isCritical = Xcrit !== null;
+    const forcedSix = isRending || isCritical;
+    if (forcedSix) {
+      const breach = !!breachingRule;
+      const shred = !!shredRule;
+      addWound(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), 1);
+    } else {
+      for (let d2 = 1; d2 <= 6; d2++) {
+        const res = classifyWoundDie(d2, false);
+        if (!res) continue;
+        addWound(res.breach, res.shred ? 1 : 0, 1 / 6);
+      }
+    }
   } else {
-    const Xr = rendingRule.value;
-    pHit = pFromNeed(Math.min(hitNeed, Xr));
-    pRendPortion = (7 - Xr) / 6;
-    pNormalPortion = pHit - pRendPortion;
+    // FIX: effHitNeed must account for Critical Hit's threshold too, not just Rending's.
+    const candidateThresholds = [hitNeed];
+    if (Xrend !== null) candidateThresholds.push(Xrend);
+    if (Xcrit !== null) candidateThresholds.push(Xcrit);
+    const effHitNeed = Math.min(...candidateThresholds);
+
+    pHit = pFromNeed(effHitNeed);
+
+    for (let d = effHitNeed; d <= 6; d++) {
+      const isRending = Xrend !== null && d >= Xrend;
+      const isCritical = Xcrit !== null && d >= Xcrit;
+      const forcedSix = isRending || isCritical;
+      if (forcedSix) {
+        const breach = !!breachingRule;
+        const shred = !!shredRule;
+        addWound(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), 1 / 6);
+      } else {
+        for (let d2 = 1; d2 <= 6; d2++) {
+          const res = classifyWoundDie(d2, false);
+          if (!res) continue;
+          addWound(res.breach, res.shred ? 1 : 0, (1 / 6) * (1 / 6));
+        }
+      }
+    }
   }
 
-  // A rending-forced wound is treated as a natural 6 on the wound roll too,
-  // so it trivially satisfies any active breach/shred threshold (both <= 6).
-  const rendKey = (Xbreach !== null ? 'Breach' : 'noBreach') + "_" + (Xshred !== null ? 'Shred' : 'noShred');
+  const pWoundAbsolute = Object.values(buckets).reduce((a, b) => a + b, 0);
+  const pWound = pHit > 0 ? pWoundAbsolute / pHit : 0;
 
-  const categories = { Breach_Shred: 0, Breach_noShred: 0, noBreach_Shred: 0, noBreach_noShred: 0 };
-  categories[rendKey] += pRendPortion;
-  categories.Breach_Shred += pNormalPortion * bucket.Breach_Shred;
-  categories.Breach_noShred += pNormalPortion * bucket.Breach_noShred;
-  categories.noBreach_Shred += pNormalPortion * bucket.noBreach_Shred;
-  categories.noBreach_noShred += pNormalPortion * bucket.noBreach_noShred;
-
-  const pWoundAbsolute = categories.Breach_Shred + categories.Breach_noShred + categories.noBreach_Shred + categories.noBreach_noShred;
-  const pWound = pHit > 0 ? pWoundAbsolute / pHit : 0; // conditional-on-hit, for Stage 1/2 display
-
-  return { pHit, pWound, hitNeed, wNeed, categories };
+  return { pHit, pWound, hitNeed, wNeed, buckets };
 }
 
 /**
- * Combines the (breach, shred) categories with save resolution. Collapses
- * the breach axis (only relevant during the save roll itself) down to the
- * two shred-relevant absolute probabilities the casualty calculation needs.
+ * Combines the (breach, damage-tier) buckets with save resolution, folding
+ * the breach axis (only relevant during the save roll) down to three
+ * absolute per-die probabilities: one per damage-bonus tier.
  */
-export function resolveFinalOutcomeProbabilities(categories, ap, armour, invuln, cover) {
+export function resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover) {
   const saveNormal = resolveSave(ap, armour, invuln, cover);
   const saveBreach = resolveSave(2, armour, invuln, cover); // AP2 override
 
-  const pUnsavedShred = categories.Breach_Shred * saveBreach.pUnsaved + categories.noBreach_Shred * saveNormal.pUnsaved;
-  const pUnsavedNoShred = categories.Breach_noShred * saveBreach.pUnsaved + categories.noBreach_noShred * saveNormal.pUnsaved;
+  const pUnsavedTierDplus0 = buckets.BreachDplus0 * saveBreach.pUnsaved + buckets.noBreachDplus0 * saveNormal.pUnsaved;
+  const pUnsavedTierDplus1 = buckets.BreachDplus1 * saveBreach.pUnsaved + buckets.noBreachDplus1 * saveNormal.pUnsaved;
+  const pUnsavedTierDplus2 = buckets.BreachDplus2 * saveBreach.pUnsaved + buckets.noBreachDplus2 * saveNormal.pUnsaved;
 
-  return { pUnsavedShred, pUnsavedNoShred, saveNormal, saveBreach };
+  return { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, saveNormal, saveBreach };
 }
 
 /**
@@ -323,7 +361,7 @@ export function resolveFinalOutcomeProbabilities(categories, ap, armour, invuln,
  * given (models-already-dead, current-model-health-remaining) state.
  * Order within the group doesn't matter (every wound here does the same
  * damage), so this is a closed-form calculation, not a simulation.
- * Damage never spills from one model to the next.
+ * Damage never spills from one model to the next
  */
 export function applyWoundGroupToState(state, N, Dval, W, targetModels) {
   let { killed, wounded_model } = state;
@@ -351,11 +389,29 @@ export function applyWoundGroupToState(state, N, Dval, W, targetModels) {
 }
 
 /**
+ * Map a distribution of unsaved-wound counts to a distribution of models
+ * removed. A model dies after ceil(W/D) unsaved wounds; damage does not
+ * spill over to the next model; kills are capped at targetModels. No 
+ * longer used except in reference tests
+ */
+export function computeModelsRemoved(distUnsaved, W, D, targetModels) {
+  const hitsPerKill = Math.ceil(W / D);
+  const N = distUnsaved.length - 1;
+  const distModels = new Array(targetModels + 1).fill(0);
+  for (let k = 0; k <= N; k++) {
+    const killed = Math.min(Math.floor(k / hitsPerKill), targetModels);
+    distModels[killed] += distUnsaved[k];
+  }
+  return { distModels, hitsPerKill };
+}
+
+/**
  * Exact distribution of models killed when unsaved wounds split into two
  * Fire Groups by Damage (D and D+1, from Shred), resolved as complete
  * groups lowest-Damage-first (per house convention). Uses the multinomial
  * marginal+conditional identity to get the exact joint (N_normal, N_shred)
- * distribution without building the full 2D grid.
+ * distribution without building the full 2D grid. No longer used except in
+ * reference tests
  */
 export function computeModelsRemovedWithFireGroups(totalDice, pUnsavedNormal, pUnsavedShred, D, W, targetModels) {
   if (targetModels <= 0) return { distModels: [1] };
@@ -388,5 +444,66 @@ export function computeModelsRemovedWithFireGroups(totalDice, pUnsavedNormal, pU
     }
   }
 
+  return { distModels };
+}
+
+/**
+ * Exact distribution of models killed when unsaved wounds split into any
+ * number of Fire Groups by Damage value, resolved as complete groups from
+ * lowest Damage to highest (house convention). tiers: array of
+ * { damage, pUnsaved } — pUnsaved is each tier's ABSOLUTE per-attacking-die
+ * probability. Any implicit "no effect" residual is handled automatically.
+ *
+ * Complexity note: exact, but combinatorial in the number of active tiers —
+ * each additional tier requires one more layer of conditional binomial
+ * draws. Branches are merged by (dice remaining, state) after each tier to
+ * keep growth in check. Fine for realistic wargame unit sizes (tens to a
+ * few hundred total dice); very large totalDice (many hundreds+) combined
+ * with 3 simultaneous non-trivial tiers can become slow — see note below
+ * the code.
+ */
+export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels) {
+  if (targetModels <= 0) return { distModels: [1] };
+
+  const sorted = [...tiers]
+    .filter((t) => t.pUnsaved > 1e-14) // skip degenerate/inactive tiers entirely
+    .sort((a, b) => a.damage - b.damage);
+
+  let branches = [{ diceRemaining: totalDice, pMassRemaining: 1, state: { killed: 0, wounded_model: W }, prob: 1 }];
+
+  for (const tier of sorted) {
+    const nextBranches = [];
+    for (const br of branches) {
+      if (br.state.killed >= targetModels || br.prob <= 1e-14) {
+        nextBranches.push(br);
+        continue;
+      }
+      const pThisGivenRemaining = br.pMassRemaining > 0 ? tier.pUnsaved / br.pMassRemaining : 0;
+      const countDist = binomialPMF(br.diceRemaining, pThisGivenRemaining);
+      for (let k = 0; k <= br.diceRemaining; k++) {
+        const pk = countDist[k];
+        if (pk <= 1e-14) continue;
+        const newState = applyWoundGroupToState(br.state, k, tier.damage, W, targetModels);
+        nextBranches.push({
+          diceRemaining: br.diceRemaining - k,
+          pMassRemaining: br.pMassRemaining - tier.pUnsaved,
+          state: newState,
+          prob: br.prob * pk,
+        });
+      }
+    }
+    // merge branches that agree on (diceRemaining, state) before the next tier
+    const merged = new Map();
+    for (const b of nextBranches) {
+      const key = `${b.diceRemaining},${b.state.killed},${b.state.wounded_model}`;
+      const existing = merged.get(key);
+      if (existing) existing.prob += b.prob;
+      else merged.set(key, b);
+    }
+    branches = [...merged.values()];
+  }
+
+  const distModels = new Array(targetModels + 1).fill(0);
+  for (const br of branches) distModels[br.state.killed] += br.prob;
   return { distModels };
 }

@@ -11,7 +11,8 @@ import {
 import {
   resolveAttackProbabilities,
   resolveFinalOutcomeProbabilities,
-  computeModelsRemovedWithFireGroups,
+  computeModelsRemovedMultiTier,
+  getEffectiveCriticalThreshold,
   binomialPMF,
   propagate,
   mean,
@@ -133,30 +134,36 @@ export default function App() {
 
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
-    const { pHit, pWound, hitNeed, wNeed, categories } =
+    const { pHit, pWound, hitNeed, wNeed, buckets } =
       resolveAttackProbabilities(bs, str, tough, activeRules);
 
-    const { pUnsavedShred, pUnsavedNoShred, saveNormal, saveBreach } =
-      resolveFinalOutcomeProbabilities(categories, ap, armour, invuln, cover);
+    const critNeed = getEffectiveCriticalThreshold(bs, activeRules);
+    const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, saveNormal, saveBreach } =
+      resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
 
     const totalDice = fp * modelsFiring;
     const distHits = binomialPMF(totalDice, pHit);
-    const distWounds = propagate(distHits, pWound);
+    const distWounds = propagate(distHits, pWound); // Stage 1/2 display only
 
-    const pUnsavedTotal = pUnsavedShred + pUnsavedNoShred;
-    const distUnsaved = binomialPMF(totalDice, pUnsavedTotal);
+    const pUnsavedTotal = pUnsavedTierDplus0 + pUnsavedTierDplus1 + pUnsavedTierDplus2;
+    const distUnsaved = binomialPMF(totalDice, pUnsavedTotal); // Stage 3 display only
 
-    const { distModels } = computeModelsRemovedWithFireGroups(
-      totalDice, pUnsavedNoShred, pUnsavedShred, dmg, woundsPerModel, modelsTarget
-    );
+    const tiers = [
+      { damage: dmg, pUnsaved: pUnsavedTierDplus0 },
+      { damage: dmg + 1, pUnsaved: pUnsavedTierDplus1 },
+      { damage: dmg + 2, pUnsaved: pUnsavedTierDplus2 },
+    ];
+    const { distModels } = computeModelsRemovedMultiTier(totalDice, tiers, woundsPerModel, modelsTarget);
     const cdfModels = cdfAtLeast(distModels);
 
     return { hitNeed, pHit, wNeed, saveNormal, saveBreach, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels };
-  }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, activeRules]);
+      }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, activeRules]);
 
   const { saveNormal, saveBreach, hitNeed, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill } = results;
 
   const modelsChartDist = modelsView === 'cumulative' ? cdfModels : distModels;
+
+  const critNeed = getEffectiveCriticalThreshold(bs, activeRules);
 
   let saveHint;
   if (saveNormal.saveValue === null) {
@@ -187,7 +194,13 @@ export default function App() {
                 <div className="field">
                   <label>Ballistic Skill (BS)</label>
                   <input type="number" min="1" max="10" value={bs} onChange={(e) => setBs(Number(e.target.value))} />
-                  <div className="hint">{bs >= 10 ? 'Automatic hit' : `Needs ${hitNeed}+ to hit`}</div>
+                  <div className="hint">
+                    {bs >= 10
+                      ? (critNeed !== null ? 'Automatic hit, automatic Critical Hit' : 'Automatic hit')
+                      : critNeed !== null
+                        ? `Needs ${hitNeed}+ to hit, needs ${critNeed}+ to Critical Hit`
+                        : `Needs ${hitNeed}+ to hit`}
+                  </div>
                 </div>
               </div>
               <div className="subgrid">

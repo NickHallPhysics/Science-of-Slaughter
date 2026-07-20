@@ -40,6 +40,14 @@ export const SPECIAL_RULE_DEFINITIONS = [
     defaultValue: 6,
     description: 'A to-wound roll ≥ X, before modifiers, increases that wound\'s Damage by 1 if a wound is inflicted.',
   },
+  {
+    id: 'criticalHit',
+    label: 'Critical Hit',
+    valueLabel: 'X',
+    options: [2, 3, 4, 5, 6],
+    defaultValue: 6,
+    description: 'A to-hit roll ≥ X (before modifiers) is a Critical Hit: the wound roll is treated as a 6, and that wound\'s Damage is increased by 1. Stacks with Shred.',
+  },
   // future rules go here, e.g.:
   // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
 ];
