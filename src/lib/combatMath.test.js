@@ -5,6 +5,10 @@ import {
   needForWound,
   resolveHitAndWound,
   resolveSave,
+  resolveAttackProbabilities,
+  resolveFinalOutcomeProbabilities,
+  computeModelsRemovedWithFireGroups,
+  applyWoundGroupToState,
   binomialPMF,
   propagate,
   mean,
@@ -253,5 +257,107 @@ describe('resolveHitAndWound — Rending + Poisoned combined', () => {
       { id: 'poisoned', value: 6 }, // weak poison, shouldn't matter — rending already guarantees it
     ]);
     expect(r.pWound).toBe(1);
+  });
+});
+
+describe('applyWoundGroupToState', () => {
+  it('partial damage, not enough to kill', () => {
+    expect(applyWoundGroupToState({ killed: 0, wounded_model: 5 }, 2, 1, 5, 10)).toEqual({ killed: 0, wounded_model: 3 });
+  });
+  it('exactly enough to kill the current model, next model starts fresh', () => {
+    expect(applyWoundGroupToState({ killed: 0, wounded_model: 5 }, 5, 1, 5, 10)).toEqual({ killed: 1, wounded_model: 5 });
+  });
+  it('kills multiple full models plus a partial one', () => {
+    expect(applyWoundGroupToState({ killed: 0, wounded_model: 5 }, 12, 1, 5, 10)).toEqual({ killed: 2, wounded_model: 3 });
+  });
+  it('caps at targetModels, wasting excess wounds', () => {
+    expect(applyWoundGroupToState({ killed: 0, wounded_model: 5 }, 100, 1, 5, 3)).toEqual({ killed: 3, wounded_model: 0 });
+  });
+  it('continues correctly from an already-partially-wounded state', () => {
+    expect(applyWoundGroupToState({ killed: 1, wounded_model: 2 }, 2, 1, 5, 10)).toEqual({ killed: 2, wounded_model: 5 });
+  });
+  it('N=0 or already-wiped unit is a no-op', () => {
+    expect(applyWoundGroupToState({ killed: 2, wounded_model: 5 }, 0, 1, 5, 10)).toEqual({ killed: 2, wounded_model: 5 });
+    expect(applyWoundGroupToState({ killed: 10, wounded_model: 0 }, 5, 1, 5, 10)).toEqual({ killed: 10, wounded_model: 0 });
+  });
+});
+
+function bruteForceJointTrinomial(n, p1, p2) {
+  let dist = [[1]];
+  const p3 = 1 - p1 - p2;
+  for (let t = 0; t < n; t++) {
+    const next = Array.from({ length: t + 2 }, () => new Array(t + 2).fill(0));
+    for (let a = 0; a <= t; a++) for (let b = 0; b <= t - a; b++) {
+      const p = dist[a][b];
+      if (!p) continue;
+      next[a + 1][b] += p * p1;
+      next[a][b + 1] += p * p2;
+      next[a][b] += p * p3;
+    }
+    dist = next;
+  }
+  return dist;
+}
+
+describe('computeModelsRemovedWithFireGroups', () => {
+  it('reduces to the constant-damage formula when Shred probability is 0', () => {
+    const totalDice = 12, pUnsaved = 0.4, D = 2, W = 5, targetModels = 6;
+    const { distModels } = computeModelsRemovedWithFireGroups(totalDice, pUnsaved, 0, D, W, targetModels);
+    const { distModels: oldDist } = computeModelsRemoved(binomialPMF(totalDice, pUnsaved), W, D, targetModels);
+    for (let k = 0; k <= targetModels; k++) expect(distModels[k]).toBeCloseTo(oldDist[k], 9);
+  });
+
+  it('matches an independently-built joint distribution (brute-force cross-check)', () => {
+    const totalDice = 6, pNormal = 0.3, pShred = 0.2, D = 2, W = 3, targetModels = 3;
+    const joint = bruteForceJointTrinomial(totalDice, pNormal, pShred);
+    const expected = new Array(targetModels + 1).fill(0);
+    for (let a = 0; a <= totalDice; a++) {
+      for (let b = 0; b <= totalDice - a; b++) {
+        const p = joint[a]?.[b] ?? 0;
+        if (p <= 0) continue;
+        const afterNormal = applyWoundGroupToState({ killed: 0, wounded_model: W }, a, D, W, targetModels);
+        const final = afterNormal.killed >= targetModels
+          ? afterNormal
+          : applyWoundGroupToState(afterNormal, b, D + 1, W, targetModels);
+        expected[final.killed] += p;
+      }
+    }
+    const { distModels } = computeModelsRemovedWithFireGroups(totalDice, pNormal, pShred, D, W, targetModels);
+    for (let k = 0; k <= targetModels; k++) expect(distModels[k]).toBeCloseTo(expected[k], 9);
+  });
+
+  it('distribution sums to 1', () => {
+    const { distModels } = computeModelsRemovedWithFireGroups(20, 0.2, 0.15, 2, 6, 8);
+    expect(distModels.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
+  });
+});
+
+describe('resolveAttackProbabilities — Shred', () => {
+  it('a Rending-forced wound always triggers Shred, regardless of X', () => {
+    const { categories } = resolveAttackProbabilities(4, 1, 20, [
+      { id: 'rending', value: 4 },
+      { id: 'shred', value: 6 },
+    ]);
+    const totalWound = categories.Breach_Shred + categories.Breach_noShred + categories.noBreach_Shred + categories.noBreach_noShred;
+    const totalShred = categories.noBreach_Shred + categories.Breach_Shred;
+    expect(totalShred).toBeCloseTo(totalWound, 9);
+  });
+
+  it('Poisoned success does not automatically shred (needs the real roll to also clear X)', () => {
+    const { categories } = resolveAttackProbabilities(4, 1, 20, [
+      { id: 'poisoned', value: 2 },
+      { id: 'shred', value: 6 },
+    ]);
+    const totalWound = categories.Breach_Shred + categories.Breach_noShred + categories.noBreach_Shred + categories.noBreach_noShred;
+    const totalShred = categories.noBreach_Shred + categories.Breach_Shred;
+    expect(totalWound).toBeGreaterThan(totalShred);
+  });
+
+  it('Breach and Shred can occur independently on the same wound', () => {
+    const { categories } = resolveAttackProbabilities(4, 6, 4, [
+      { id: 'breaching', value: 3 },
+      { id: 'shred', value: 3 },
+    ]);
+    expect(categories.Breach_Shred).toBeGreaterThan(0);
   });
 });

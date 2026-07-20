@@ -9,17 +9,13 @@ import {
   Tooltip,
 } from 'chart.js';
 import {
-  needForBS,
-  pFromNeed,
-  needForWound,
-  resolveHitAndWound,
-  resolveUnsavedGivenHit,
-  resolveSave,
+  resolveAttackProbabilities,
+  resolveFinalOutcomeProbabilities,
+  computeModelsRemovedWithFireGroups,
   binomialPMF,
   propagate,
   mean,
   cdfAtLeast,
-  computeModelsRemoved,
 } from './lib/combatMath.js';
 import {
   SPECIAL_RULE_DEFINITIONS,
@@ -137,20 +133,25 @@ export default function App() {
 
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
-    const { pHit, pWound, pBreachWound, pNoBreachWound, hitNeed, wNeed } =
-  resolveHitAndWound(bs, str, tough, activeRules);
+    const { pHit, pWound, hitNeed, wNeed, categories } =
+      resolveAttackProbabilities(bs, str, tough, activeRules);
 
-    const { pUnsavedGivenHit, saveNormal, saveBreach } =
-      resolveUnsavedGivenHit(pBreachWound, pNoBreachWound, ap, armour, invuln, cover);
+    const { pUnsavedShred, pUnsavedNoShred, saveNormal, saveBreach } =
+      resolveFinalOutcomeProbabilities(categories, ap, armour, invuln, cover);
 
     const totalDice = fp * modelsFiring;
     const distHits = binomialPMF(totalDice, pHit);
-    const distWounds = propagate(distHits, pWound);          // Stage 2 — unaffected by breach
-    const distUnsaved = propagate(distHits, pUnsavedGivenHit); // Stage 3 — computed straight from hits
-    const { distModels, hitsPerKill } = computeModelsRemoved(distUnsaved, woundsPerModel, dmg, modelsTarget);
+    const distWounds = propagate(distHits, pWound);
+
+    const pUnsavedTotal = pUnsavedShred + pUnsavedNoShred;
+    const distUnsaved = binomialPMF(totalDice, pUnsavedTotal);
+
+    const { distModels } = computeModelsRemovedWithFireGroups(
+      totalDice, pUnsavedNoShred, pUnsavedShred, dmg, woundsPerModel, modelsTarget
+    );
     const cdfModels = cdfAtLeast(distModels);
 
-    return { hitNeed, pHit, wNeed, saveNormal, saveBreach, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill };
+    return { hitNeed, pHit, wNeed, saveNormal, saveBreach, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels };
   }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, activeRules]);
 
   const { saveNormal, saveBreach, hitNeed, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill } = results;
@@ -366,7 +367,9 @@ export default function App() {
               </div>
               <div className="chart-wrap"><BarChart dist={modelsChartDist} color={COLORS.models} /></div>
               <div className="readout-strip">
-                <div><div className="rl">Hits/Kill needed</div><div className="rv">{hitsPerKill} unsaved wound{hitsPerKill > 1 ? 's' : ''}</div></div>
+                <div><div className="rl">Hits/Kill (normal / shred)</div>
+                  <div className="rv">{Math.ceil(woundsPerModel / dmg)} / {Math.ceil(woundsPerModel / (dmg + 1))}</div>
+                </div>
                 <div><div className="rl">P(&ge;1 model down)</div><div className="rv">{fmtPct(cdfModels[1] ?? 0)}</div></div>
                 <div><div className="rl">P(unit wiped out)</div><div className="rv">{fmtPct(cdfModels[modelsTarget] ?? 0)}</div></div>
                 <div><div className="rl">Total dice rolled</div><div className="rv">{totalDice}</div></div>

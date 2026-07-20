@@ -236,3 +236,157 @@ export function computeModelsRemoved(distUnsaved, W, D, targetModels) {
   }
   return { distModels, hitsPerKill };
 }
+
+/**
+ * Resolves hit/wound probabilities plus the joint (breach, shred) category
+ * split needed downstream. categories.XY absolute probabilities (already
+ * include pHit) — not conditional on a hit — where X = breach T/F and
+ * Y = shred T/F, e.g. categories.Breach_noShred = breach-only, categories.noBreach_Shred = shred-only.
+ */
+export function resolveAttackProbabilities(bs, S, T, activeRules = []) {
+  const hitNeed = needForBS(bs);
+  const wNeed = needForWound(S, T);
+
+  const rendingRule = activeRules.find((r) => r.id === 'rending');
+  const poisonedRule = activeRules.find((r) => r.id === 'poisoned');
+  const breachingRule = activeRules.find((r) => r.id === 'breaching');
+  const shredRule = activeRules.find((r) => r.id === 'shred');
+
+  const poisonThreshold = poisonedRule ? poisonedRule.value : 7; // 7 = never
+  const wThreshold = wNeed === null ? 7 : wNeed;
+  const m = Math.min(wThreshold, poisonThreshold); // effective wound-success threshold on the real die
+  const Xbreach = breachingRule ? breachingRule.value : null;
+  const Xshred = shredRule ? shredRule.value : null;
+
+  // Enumerate the wound die (1-6) once. bucket[key] = ABSOLUTE probability
+  // (over a single random wound die) that a wound occurs AND falls into
+  // that (breach, shred) combination.
+  const bucket = { Breach_Shred: 0, Breach_noShred: 0, noBreach_Shred: 0, noBreach_noShred: 0 };
+  for (let d = 1; d <= 6; d++) {
+    if (d < m) continue; // no wound at all on this face
+    const breach = Xbreach !== null && d >= Xbreach;
+    const shred = Xshred !== null && d >= Xshred;
+    bucket[(breach ? 'Breach' : 'noBreach') + "_" + (shred ? 'Shred' : 'noShred')] += 1 / 6;
+  }
+
+  let pHit, pRendPortion, pNormalPortion;
+  if (hitNeed === null) {
+    // BS10: hit die assumed = 6.
+    pHit = 1;
+    pRendPortion = rendingRule ? 1 : 0; // natural 6 always satisfies rending's X (X <= 6)
+    pNormalPortion = rendingRule ? 0 : 1;
+  } else if (!rendingRule) {
+    pHit = pFromNeed(hitNeed);
+    pRendPortion = 0;
+    pNormalPortion = pHit;
+  } else {
+    const Xr = rendingRule.value;
+    pHit = pFromNeed(Math.min(hitNeed, Xr));
+    pRendPortion = (7 - Xr) / 6;
+    pNormalPortion = pHit - pRendPortion;
+  }
+
+  // A rending-forced wound is treated as a natural 6 on the wound roll too,
+  // so it trivially satisfies any active breach/shred threshold (both <= 6).
+  const rendKey = (Xbreach !== null ? 'Breach' : 'noBreach') + "_" + (Xshred !== null ? 'Shred' : 'noShred');
+
+  const categories = { Breach_Shred: 0, Breach_noShred: 0, noBreach_Shred: 0, noBreach_noShred: 0 };
+  categories[rendKey] += pRendPortion;
+  categories.Breach_Shred += pNormalPortion * bucket.Breach_Shred;
+  categories.Breach_noShred += pNormalPortion * bucket.Breach_noShred;
+  categories.noBreach_Shred += pNormalPortion * bucket.noBreach_Shred;
+  categories.noBreach_noShred += pNormalPortion * bucket.noBreach_noShred;
+
+  const pWoundAbsolute = categories.Breach_Shred + categories.Breach_noShred + categories.noBreach_Shred + categories.noBreach_noShred;
+  const pWound = pHit > 0 ? pWoundAbsolute / pHit : 0; // conditional-on-hit, for Stage 1/2 display
+
+  return { pHit, pWound, hitNeed, wNeed, categories };
+}
+
+/**
+ * Combines the (breach, shred) categories with save resolution. Collapses
+ * the breach axis (only relevant during the save roll itself) down to the
+ * two shred-relevant absolute probabilities the casualty calculation needs.
+ */
+export function resolveFinalOutcomeProbabilities(categories, ap, armour, invuln, cover) {
+  const saveNormal = resolveSave(ap, armour, invuln, cover);
+  const saveBreach = resolveSave(2, armour, invuln, cover); // AP2 override
+
+  const pUnsavedShred = categories.Breach_Shred * saveBreach.pUnsaved + categories.noBreach_Shred * saveNormal.pUnsaved;
+  const pUnsavedNoShred = categories.Breach_noShred * saveBreach.pUnsaved + categories.noBreach_noShred * saveNormal.pUnsaved;
+
+  return { pUnsavedShred, pUnsavedNoShred, saveNormal, saveBreach };
+}
+
+/**
+ * Applies N wounds of a single Damage value to a unit, starting from a
+ * given (models-already-dead, current-model-health-remaining) state.
+ * Order within the group doesn't matter (every wound here does the same
+ * damage), so this is a closed-form calculation, not a simulation.
+ * Damage never spills from one model to the next.
+ */
+export function applyWoundGroupToState(state, N, Dval, W, targetModels) {
+  let { killed, wounded_model } = state;
+  if (killed >= targetModels || N <= 0) return { killed, wounded_model };
+  let remaining = N;
+
+  // finish off the current (possibly already-damaged) model
+  const killCurrent = Math.ceil(wounded_model / Dval);
+  if (remaining < killCurrent) {
+    return { killed, wounded_model: wounded_model - remaining * Dval };
+  }
+  remaining -= killCurrent;
+  killed += 1;
+  if (killed >= targetModels) return { killed: targetModels, wounded_model: 0 };
+
+  // fully kill as many fresh models as the remaining wounds allow
+  const killFull = Math.ceil(W / Dval);
+  const fullKills = Math.min(Math.floor(remaining / killFull), targetModels - killed);
+  killed += fullKills;
+  remaining -= fullKills * killFull;
+  if (killed >= targetModels) return { killed: targetModels, wounded_model: 0 };
+
+  // leftover wounds (guaranteed < killFull here) damage one more fresh model
+  return remaining > 0 ? { killed, wounded_model: W - remaining * Dval } : { killed, wounded_model: W };
+}
+
+/**
+ * Exact distribution of models killed when unsaved wounds split into two
+ * Fire Groups by Damage (D and D+1, from Shred), resolved as complete
+ * groups lowest-Damage-first (per house convention). Uses the multinomial
+ * marginal+conditional identity to get the exact joint (N_normal, N_shred)
+ * distribution without building the full 2D grid.
+ */
+export function computeModelsRemovedWithFireGroups(totalDice, pUnsavedNormal, pUnsavedShred, D, W, targetModels) {
+  if (targetModels <= 0) return { distModels: [1] };
+
+  const distModels = new Array(targetModels + 1).fill(0);
+  const distNormalCount = binomialPMF(totalDice, pUnsavedNormal); // N_normal is a valid marginal
+
+  for (let fireGroup1 = 0; fireGroup1 <= totalDice; fireGroup1++) {
+    const pFireGroup1 = distNormalCount[fireGroup1];
+    if (pFireGroup1 <= 1e-14) continue;
+
+    const stateAfterNormal = applyWoundGroupToState({ killed: 0, wounded_model: W }, fireGroup1, D, W, targetModels);
+    if (stateAfterNormal.killed >= targetModels) {
+      distModels[targetModels] += pFireGroup1;
+      continue;
+    }
+
+    // Given N_normal = a, the remaining (totalDice - a) dice split between
+    // Shred and "other" in proportion — this is the conditional step.
+    const remainingDice = totalDice - fireGroup1;
+    const denom = 1 - pUnsavedNormal;
+    const pShredGivenNotNormal = denom > 0 ? pUnsavedShred / denom : 0;
+    const distShredCount = binomialPMF(remainingDice, pShredGivenNotNormal);
+
+    for (let fireGroup2 = 0; fireGroup2 <= remainingDice; fireGroup2++) {
+      const pFireGroup2 = distShredCount[fireGroup2];
+      if (pFireGroup2 <= 1e-14) continue;
+      const finalState = applyWoundGroupToState(stateAfterNormal, fireGroup2, D + 1, W, targetModels);
+      distModels[finalState.killed] += pFireGroup1 * pFireGroup2;
+    }
+  }
+
+  return { distModels };
+}
