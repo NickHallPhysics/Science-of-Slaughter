@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Chart,
   BarController,
@@ -13,6 +12,7 @@ import {
   resolveFinalOutcomeProbabilities,
   computeModelsRemovedMultiTier,
   getEffectiveCriticalThreshold,
+  applyDeflagrateWave,
   binomialPMF,
   propagate,
   mean,
@@ -29,6 +29,7 @@ const COLORS = {
   wounds: '#5f6b3fcc',
   unsaved: '#4d6a78cc',
   models: '#9c3628e0',
+  deflagrate: '#7a5195cc', // purple, distinct from every other series in the palette
   grid: '#c9a06e55',
   text: '#6d5a41',
   tooltipBg: '#f4eed8',
@@ -43,8 +44,7 @@ function fmtNum(x) {
   return x.toFixed(2);
 }
 
-/** A <canvas> wrapped in a Chart.js bar chart, kept in sync with `dist`. */
-function BarChart({ dist, color }) {
+function BarChart({ series, stacked = false, hidden = {}, onToggle }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
 
@@ -52,13 +52,13 @@ function BarChart({ dist, color }) {
     const ctx = canvasRef.current.getContext('2d');
     chartRef.current = new Chart(ctx, {
       type: 'bar',
-      data: { labels: [], datasets: [{ data: [], backgroundColor: color, borderWidth: 0, borderRadius: 1, maxBarThickness: 34 }] },
+      data: { labels: [], datasets: [] },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         animation: { duration: 250 },
         plugins: {
-          legend: { display: false },
+          legend: { display: false }, // replaced by our own HTML legend/toggle below
           tooltip: {
             backgroundColor: COLORS.tooltipBg,
             borderColor: COLORS.tooltipBorder,
@@ -67,12 +67,13 @@ function BarChart({ dist, color }) {
             bodyColor: COLORS.tooltipText,
             titleFont: { family: 'JetBrains Mono', size: 11 },
             bodyFont: { family: 'JetBrains Mono', size: 11 },
-            callbacks: { label: (c) => (c.raw * 100).toFixed(2) + '%' },
+            callbacks: { label: (c) => `${c.dataset.label ? c.dataset.label + ': ' : ''}${(c.raw * 100).toFixed(2)}%` },
           },
         },
         scales: {
-          x: { grid: { display: false }, ticks: { color: COLORS.text, font: { family: 'JetBrains Mono', size: 10 } } },
+          x: { stacked: false, grid: { display: false }, ticks: { color: COLORS.text, font: { family: 'JetBrains Mono', size: 10 } } },
           y: {
+            stacked: false,
             beginAtZero: true,
             grid: { color: COLORS.grid },
             ticks: { color: COLORS.text, font: { family: 'JetBrains Mono', size: 10 }, callback: (v) => (v * 100).toFixed(0) + '%' },
@@ -86,14 +87,43 @@ function BarChart({ dist, color }) {
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const labels = dist.map((_, k) => k);
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = dist;
-    chart.data.datasets[0].backgroundColor = color;
+    const visibleSeries = series.filter((s) => !hidden[s.id]);
+    const maxLen = visibleSeries.length ? Math.max(...visibleSeries.map((s) => s.data.length)) : 1;
+    chart.data.labels = Array.from({ length: maxLen }, (_, k) => k);
+    chart.data.datasets = visibleSeries.map((s) => ({
+      data: s.data,
+      backgroundColor: s.color,
+      borderWidth: 0,
+      borderRadius: 1,
+      maxBarThickness: 34,
+      label: s.label || '',
+    }));
+    chart.options.scales.x.stacked = stacked;
+    chart.options.scales.y.stacked = stacked;
     chart.update();
-  }, [dist, color]);
+  }, [series, stacked, hidden]);
 
-  return <canvas ref={canvasRef} />;
+  return (
+    <>
+      {series.length > 1 && (
+        <div className="chart-legend">
+          {series.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={`legend-item ${hidden[s.id] ? 'legend-item-hidden' : ''}`}
+              style={{ '--legend-color': s.color }}
+              onClick={() => onToggle(s.id)}
+            >
+              <span className="legend-swatch" />
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <canvas ref={canvasRef} />
+    </>
+  );
 }
 
 export default function App() {
@@ -111,6 +141,19 @@ export default function App() {
   const availableRules = SPECIAL_RULE_DEFINITIONS.filter(
     (def) => !activeRules.some((r) => r.id === def.id)
   );
+
+  const [hiddenSeries, setHiddenSeries] = useState({}); // { [chartId]: { [seriesId]: true } }
+
+  function toggleSeries(chartId, seriesId) {
+    setHiddenSeries((prev) => {
+      const chartHidden = prev[chartId] || {};
+      return { ...prev, [chartId]: { ...chartHidden, [seriesId]: !chartHidden[seriesId] } };
+    });
+  }
+
+  function isSeriesHidden(chartId, seriesId) {
+    return !!hiddenSeries[chartId]?.[seriesId];
+  }
 
   function addRule(id) {
     const def = SPECIAL_RULE_DEFINITIONS.find((d) => d.id === id);
@@ -153,13 +196,32 @@ export default function App() {
       { damage: dmg + 1, pUnsaved: pUnsavedTierDplus1 },
       { damage: dmg + 2, pUnsaved: pUnsavedTierDplus2 },
     ];
-    const { distModels } = computeModelsRemovedMultiTier(totalDice, tiers, woundsPerModel, modelsTarget);
+    const deflagrateRule = activeRules.find((r) => r.id === 'deflagrate');
+
+    const { distModels: distModelsPreDeflagrate, branches } =
+      computeModelsRemovedMultiTier(totalDice, tiers, woundsPerModel, modelsTarget);
+
+    let distModels = distModelsPreDeflagrate;
+    let deflagrateWoundsCaused = null;
+    let deflagrateUnsaved = null;
+
+    if (deflagrateRule) {
+      const deflagResult = applyDeflagrateWave(
+        branches, deflagrateRule.value, tough, armour, invuln, cover, woundsPerModel, modelsTarget, totalDice
+      );
+      distModels = deflagResult.distModels;
+      deflagrateWoundsCaused = deflagResult.distWoundsCaused;
+      deflagrateUnsaved = deflagResult.distUnsaved;
+    }
+
     const cdfModels = cdfAtLeast(distModels);
 
-    return { hitNeed, pHit, wNeed, saveNormal, saveBreach, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels };
+    return { hitNeed, pHit, wNeed, saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, 
+      deflagrateUnsaved, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels };
       }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, activeRules]);
 
-  const { saveNormal, saveBreach, hitNeed, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill } = results;
+  const { saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, deflagrateUnsaved, hitNeed, totalDice, 
+    distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill } = results;
 
   const modelsChartDist = modelsView === 'cumulative' ? cdfModels : distModels;
 
@@ -243,7 +305,7 @@ export default function App() {
                         onChange={(e) => updateRuleValue(rule.id, Number(e.target.value))}
                       >
                         {def.options.map((v) => (
-                          <option key={v} value={v}>{v}+</option>
+                          <option key={v} value={v}>{v}{def.optionSuffix}</option>
                         ))}
                       </select>
                       <button
@@ -294,22 +356,22 @@ export default function App() {
               <div className="field">
                 <label>Armour Save</label>
                 <select value={armour} onChange={(e) => setArmour(Number(e.target.value))}>
-                  <option value="2">2</option><option value="3">3</option><option value="4">4</option>
-                  <option value="5">5</option><option value="6">6</option><option value="7">None</option>
+                  <option value="2">2+</option><option value="3">3+</option><option value="4">4+</option>
+                  <option value="5">5+</option><option value="6">6+</option><option value="7">None</option>
                 </select>
               </div>
               <div className="field">
                 <label>Invulnerable Save</label>
                 <select value={invuln} onChange={(e) => setInvuln(Number(e.target.value))}>
-                  <option value="7">None</option><option value="2">2</option><option value="3">3</option>
-                  <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+                  <option value="2">2+</option><option value="3">3+</option><option value="4">4+</option>
+                  <option value="5">5+</option><option value="6">6+</option><option value="7">None</option>
                 </select>
               </div>
               <div className="field">
                 <label>Cover Save</label>
                 <select value={cover} onChange={(e) => setCover(Number(e.target.value))}>
-                  <option value="7">None</option><option value="2">2</option><option value="3">3</option>
-                  <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+                  <option value="2">2+</option><option value="3">3+</option><option value="4">4+</option>
+                  <option value="5">5+</option><option value="6">6+</option><option value="7">None</option>
                 </select>
               </div>
               <div className="hint">{saveHint}</div>
@@ -326,7 +388,13 @@ export default function App() {
               <div className="mean"><span className="m-label">Expected</span><span className="m-val">{fmtNum(mean(distHits))}</span></div>
             </div>
             <div className="stage-body">
-              <div className="chart-wrap"><BarChart dist={distHits} color={COLORS.hits} /></div>
+              <div className="chart-wrap">
+                <BarChart
+                  series={[{ id: 'main', data: distHits, color: COLORS.hits, label: 'Hits' }]}
+                  hidden={hiddenSeries.hits || {}}
+                  onToggle={(id) => toggleSeries('hits', id)}
+                />
+              </div>
             </div>
           </div>
           <div className="arrow-connector">↓ each hit rolls to wound ↓</div>
@@ -334,10 +402,33 @@ export default function App() {
           <div className="stage">
             <div className="stage-head">
               <div><div className="num">Stage 02 — Strength vs Toughness</div><h2>Wounds Caused</h2></div>
-              <div className="mean"><span className="m-label">Expected</span><span className="m-val">{fmtNum(mean(distWounds))}</span></div>
+                <div className="mean-group">
+                  <div className={`mean ${isSeriesHidden('wounds', 'main') ? 'mean-dimmed' : ''}`}>
+                    <span className="m-label">Expected</span><span className="m-val">{fmtNum(mean(distWounds))}</span>
+                  </div>
+                  {deflagrateRule && (
+                    <div className={`mean mean-deflagrate ${isSeriesHidden('wounds', 'deflagrate') ? 'mean-dimmed' : ''}`}>
+                      <span className="m-label">Expected Deflagrate</span><span className="m-val">{fmtNum(mean(deflagrateWoundsCaused))}</span>
+                    </div>
+                  )}
+                </div>
             </div>
             <div className="stage-body">
-              <div className="chart-wrap"><BarChart dist={distWounds} color={COLORS.wounds} /></div>
+              <div className="chart-wrap">
+                <BarChart
+                  series={
+                    deflagrateRule
+                      ? [
+                          { id: 'main', data: distWounds, color: COLORS.wounds, label: 'Wounds' },
+                          { id: 'deflagrate', data: deflagrateWoundsCaused, color: COLORS.deflagrate, label: 'Deflagrate Wounds' },
+                        ]
+                      : [{ id: 'main', data: distWounds, color: COLORS.wounds, label: 'Wounds' }]
+                  }
+                  stacked={!!deflagrateRule}
+                  hidden={hiddenSeries.wounds || {}}
+                  onToggle={(id) => toggleSeries('wounds', id)}
+                />
+              </div>
             </div>
           </div>
           <div className="arrow-connector">↓ each wound rolls a save ↓</div>
@@ -345,10 +436,33 @@ export default function App() {
           <div className="stage">
             <div className="stage-head">
               <div><div className="num">Stage 03 — Saving Throw</div><h2>Wounds Unsaved</h2></div>
-              <div className="mean"><span className="m-label">Expected</span><span className="m-val">{fmtNum(mean(distUnsaved))}</span></div>
+                <div className="mean-group">
+                  <div className={`mean ${isSeriesHidden('unsaved', 'main') ? 'mean-dimmed' : ''}`}>
+                    <span className="m-label">Expected</span><span className="m-val">{fmtNum(mean(distUnsaved))}</span>
+                  </div>
+                  {deflagrateRule && (
+                    <div className={`mean mean-deflagrate ${isSeriesHidden('unsaved', 'deflagrate') ? 'mean-dimmed' : ''}`}>
+                      <span className="m-label">Expected Deflagrate</span><span className="m-val">{fmtNum(mean(deflagrateUnsaved))}</span>
+                    </div>
+                  )}
+                </div>
             </div>
             <div className="stage-body">
-              <div className="chart-wrap"><BarChart dist={distUnsaved} color={COLORS.unsaved} /></div>
+              <div className="chart-wrap">
+                <BarChart
+                  series={
+                    deflagrateRule
+                      ? [
+                          { id: 'main', data: distUnsaved, color: COLORS.unsaved, label: 'Unsaved' },
+                          { id: 'deflagrate', data: deflagrateUnsaved, color: COLORS.deflagrate, label: 'Deflagrate Unsaved' },
+                        ]
+                      : [{ id: 'main', data: distUnsaved, color: COLORS.unsaved, label: 'Unsaved' }]
+                  }
+                  stacked={!!deflagrateRule}
+                  hidden={hiddenSeries.unsaved || {}}
+                  onToggle={(id) => toggleSeries('unsaved', id)}
+                />
+              </div>
             </div>
           </div>
           <div className="arrow-connector">↓ unsaved wounds strip models of health ↓</div>
@@ -378,14 +492,12 @@ export default function App() {
                   At least X models removed
                 </button>
               </div>
-              <div className="chart-wrap"><BarChart dist={modelsChartDist} color={COLORS.models} /></div>
-              <div className="readout-strip">
-                <div><div className="rl">Hits/Kill (normal / shred)</div>
-                  <div className="rv">{Math.ceil(woundsPerModel / dmg)} / {Math.ceil(woundsPerModel / (dmg + 1))}</div>
-                </div>
-                <div><div className="rl">P(&ge;1 model down)</div><div className="rv">{fmtPct(cdfModels[1] ?? 0)}</div></div>
-                <div><div className="rl">P(unit wiped out)</div><div className="rv">{fmtPct(cdfModels[modelsTarget] ?? 0)}</div></div>
-                <div><div className="rl">Total dice rolled</div><div className="rv">{totalDice}</div></div>
+              <div className="chart-wrap">
+                <BarChart
+                  series={[{ id: 'main', data: modelsChartDist, color: COLORS.models, label: 'Models Removed' }]}
+                  hidden={hiddenSeries.models || {}}
+                  onToggle={(id) => toggleSeries('models', id)}
+                />
               </div>
             </div>
           </div>

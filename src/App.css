@@ -218,3 +218,12 @@ footer{
 }
 .rule-remove:hover{ background:var(--danger); color:var(--panel); border-color:var(--danger); }
 .rule-add{ margin-top:4px; }
+
+.mean-group{
+  display:flex;
+  gap:18px;
+  align-items:baseline;
+}
+.mean-deflagrate .m-val{
+  color:#7a5195; /* matches COLORS.deflagrate's hue, opaque for text */
+}

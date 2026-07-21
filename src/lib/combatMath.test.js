@@ -12,6 +12,7 @@ import {
   computeModelsRemovedWithFireGroups,
   computeModelsRemovedMultiTier,
   applyWoundGroupToState,
+  applyDeflagrateWave,
   binomialPMF,
   propagate,
   mean,
@@ -576,5 +577,118 @@ describe('resolveAttackProbabilities — innate Critical Hit from high BS', () =
   it('BS <= 5 is unaffected: behaves exactly as before this change', () => {
     const { pHit } = resolveAttackProbabilities(4, 1, 20, [{ id: 'criticalHit', value: 4 }]);
     expect(pHit).toBeCloseTo(4 / 6, 9);
+  });
+});
+
+describe('computeModelsRemovedMultiTier — branches', () => {
+  it('branches sum to the same distModels as before', () => {
+    const { distModels, branches } = computeModelsRemovedMultiTier(10, [{ damage: 2, pUnsaved: 0.3 }], 5, 4);
+    const fromBranches = new Array(5).fill(0);
+    for (const br of branches) fromBranches[br.killed] += br.prob;
+    for (let k = 0; k < 5; k++) expect(fromBranches[k]).toBeCloseTo(distModels[k], 9);
+  });
+
+  it('E[N] across branches matches totalDice * total unsaved probability', () => {
+    const totalDice = 8, tiers = [{ damage: 1, pUnsaved: 0.2 }, { damage: 2, pUnsaved: 0.15 }];
+    const { branches } = computeModelsRemovedMultiTier(totalDice, tiers, 4, 5);
+    const EN = branches.reduce((acc, br) => acc + br.N * br.prob, 0);
+    expect(EN).toBeCloseTo(totalDice * 0.35, 9);
+  });
+});
+
+describe('applyDeflagrateWave', () => {
+  it('matches an independent brute-force enumeration for a small case', () => {
+    const totalDice = 3, pUnsavedD = 0.3, W = 3, targetModels = 2;
+    const X = 4, T = 4, armour = 4, invuln = 7, cover = 7;
+
+    const wNeedD = needForWound(X, T);
+    const pWoundD = (7 - wNeedD) / 6;
+    const pUnsavedDeflag = pWoundD * resolveSave(7, armour, invuln, cover).pUnsaved; // AP '-' = 7, not 0
+
+    const expected = {};
+    const add = (k, p) => { expected[k] = (expected[k] || 0) + p; };
+    for (const a of ['none', 'hit']) for (const b of ['none', 'hit']) for (const c of ['none', 'hit']) {
+      const seq = [a, b, c];
+      const n = seq.filter((x) => x === 'hit').length;
+      const pSeq = seq.reduce((acc, x) => acc * (x === 'hit' ? pUnsavedD : 1 - pUnsavedD), 1);
+      let state = applyWoundGroupToState({ killed: 0, wounded_model: W }, n, 1, W, targetModels);
+      if (n === 0 || state.killed >= targetModels) { add(state.killed, pSeq); continue; }
+      const enumerateDeflagrate = (i, successes, p) => {
+        if (i === n) {
+          const finalState = applyWoundGroupToState(state, successes, 1, W, targetModels);
+          add(finalState.killed, pSeq * p);
+          return;
+        }
+        enumerateDeflagrate(i + 1, successes + 1, p * pUnsavedDeflag);
+        enumerateDeflagrate(i + 1, successes, p * (1 - pUnsavedDeflag));
+      };
+      enumerateDeflagrate(0, 0, 1);
+    }
+
+    const { branches } = computeModelsRemovedMultiTier(totalDice, [{ damage: 1, pUnsaved: pUnsavedD }], W, targetModels);
+    const { distModels } = applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, targetModels, totalDice);
+    for (let k = 0; k <= targetModels; k++) expect(distModels[k]).toBeCloseTo(expected[k] || 0, 9);
+  });
+
+  it('an X too weak to ever wound is a correct no-op, identical to no Deflagrate at all', () => {
+    const totalDice = 6, W = 4, targetModels = 3;
+    const tiers = [{ damage: 1, pUnsaved: 0.2 }, { damage: 2, pUnsaved: 0.15 }];
+    const { distModels: baseline, branches } = computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels);
+    const { distModels: withDeflagrate } = applyDeflagrateWave(branches, 1, 20, 4, 7, 7, W, targetModels, totalDice);
+    for (let k = 0; k <= targetModels; k++) expect(withDeflagrate[k]).toBeCloseTo(baseline[k], 9);
+  });
+
+  it('does not act on an already-wiped unit', () => {
+    const { branches } = computeModelsRemovedMultiTier(20, [{ damage: 1, pUnsaved: 0.9 }], 1, 2);
+    const { distModels } = applyDeflagrateWave(branches, 6, 1, 7, 7, 7, 1, 2, 20);
+    expect(distModels[2]).toBeGreaterThan(0.9);
+  });
+
+  it('resulting distribution always sums to 1', () => {
+    const { branches } = computeModelsRemovedMultiTier(10, [{ damage: 2, pUnsaved: 0.25 }], 5, 4);
+    const { distModels } = applyDeflagrateWave(branches, 5, 4, 4, 7, 7, 5, 4, 10);
+    expect(distModels.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
+  });
+});
+
+describe('applyDeflagrateWave — AP sentinel correctness', () => {
+  it('AP "-" (represented as 7) never negates armour, regardless of armour value', () => {
+    // A save of armour=2 (the toughest possible) should still fully apply.
+    const { branches } = computeModelsRemovedMultiTier(3, [{ damage: 1, pUnsaved: 1.0 }], 3, 2);
+    const { pUnsavedDeflagrate } = applyDeflagrateWave(branches, 4, 4, 2, 7, 7, 3, 2, 3);
+    const pWound = (7 - needForWound(4, 4)) / 6; // 0.5
+    const pSaveExpected = (7 - 2) / 6; // armour 2+ fully applies
+    expect(pUnsavedDeflagrate).toBeCloseTo(pWound * (1 - pSaveExpected), 9);
+  });
+
+  it('regression guard: AP=0 would have incorrectly negated armour entirely (this is the bug that was caught)', () => {
+    const { branches } = computeModelsRemovedMultiTier(3, [{ damage: 1, pUnsaved: 1.0 }], 3, 2);
+    const { pUnsavedDeflagrate } = applyDeflagrateWave(branches, 4, 4, 4, 7, 7, 3, 2, 3);
+    // If this ever regresses to using AP=0 internally, pUnsavedDeflagrate would come back as
+    // 0.5 (armour fully negated) instead of the correct 0.25 (armour 4+ applying).
+    expect(pUnsavedDeflagrate).toBeCloseTo(0.25, 9);
+    expect(pUnsavedDeflagrate).not.toBeCloseTo(0.5, 9);
+  });
+});
+
+describe('applyDeflagrateWave — wound/unsaved distributions for charting', () => {
+  it('matches hand-derived binomial distributions for a deterministic single-branch case', () => {
+    const { branches } = computeModelsRemovedMultiTier(3, [{ damage: 1, pUnsaved: 1.0 }], 3, 2);
+    const { distWoundsCaused, distUnsaved } = applyDeflagrateWave(branches, 4, 4, 4, 7, 7, 3, 2, 3);
+    // N=3 fixed, pWoundDeflagrate=0.5, pUnsavedDeflagrate=0.25
+    const expectedWounds = [1, 3, 3, 1].map((x) => x / 8);
+    const expectedUnsaved = [0, 1, 2, 3].map((k) => [1, 3, 3, 1][k] * Math.pow(0.25, k) * Math.pow(0.75, 3 - k));
+    for (let k = 0; k <= 3; k++) {
+      expect(distWoundsCaused[k]).toBeCloseTo(expectedWounds[k], 9);
+      expect(distUnsaved[k]).toBeCloseTo(expectedUnsaved[k], 9);
+    }
+  });
+
+  it('a branch where the unit is already wiped contributes nothing to the wound distributions', () => {
+    const { branches } = computeModelsRemovedMultiTier(20, [{ damage: 1, pUnsaved: 0.95 }], 1, 2);
+    const { distWoundsCaused, distUnsaved, distModels } = applyDeflagrateWave(branches, 6, 1, 7, 7, 7, 1, 2, 20);
+    expect(distModels[2]).toBeGreaterThan(0.5); // unit frequently wiped already
+    expect(distWoundsCaused.reduce((a, b) => a + b, 0)).toBeLessThan(1); // wiped branches excluded
+    expect(distUnsaved.reduce((a, b) => a + b, 0)).toBeLessThan(1);
   });
 });

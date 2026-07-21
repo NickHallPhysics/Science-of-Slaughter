@@ -463,10 +463,10 @@ export function computeModelsRemovedWithFireGroups(totalDice, pUnsavedNormal, pU
  * the code.
  */
 export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels) {
-  if (targetModels <= 0) return { distModels: [1] };
+  if (targetModels <= 0) return { distModels: [1], branches: [] };
 
   const sorted = [...tiers]
-    .filter((t) => t.pUnsaved > 1e-14) // skip degenerate/inactive tiers entirely
+    .filter((t) => t.pUnsaved > 1e-14)
     .sort((a, b) => a.damage - b.damage);
 
   let branches = [{ diceRemaining: totalDice, pMassRemaining: 1, state: { killed: 0, wounded_model: W }, prob: 1 }];
@@ -492,7 +492,6 @@ export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels)
         });
       }
     }
-    // merge branches that agree on (diceRemaining, state) before the next tier
     const merged = new Map();
     for (const b of nextBranches) {
       const key = `${b.diceRemaining},${b.state.killed},${b.state.wounded_model}`;
@@ -505,5 +504,71 @@ export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels)
 
   const distModels = new Array(targetModels + 1).fill(0);
   for (const br of branches) distModels[br.state.killed] += br.prob;
-  return { distModels };
+
+  // Expose the joint (unsaved-wound-count, resulting state) distribution too —
+  // needed by rules like Deflagrate that spawn a follow-up attack sized by
+  // this attack's own unsaved wound count. N = totalDice - diceRemaining,
+  // since diceRemaining is exactly the dice that landed in no tier at all.
+  const branchesOut = branches.map((br) => ({
+    N: totalDice - br.diceRemaining,
+    killed: br.state.killed,
+    wounded_model: br.state.wounded_model,
+    prob: br.prob,
+  }));
+
+  return { distModels, branches: branchesOut };
+}
+
+/**
+ * Resolves the Deflagrate(X) follow-up Fire Group, and also produces the
+ * standalone "wounds caused" / "wounds unsaved" distributions from that
+ * follow-up wave alone, for charting purposes.
+ *
+ * For each (N, state, prob) branch of the preceding attack, spawns N
+ * already-resolved Hits at Strength X (no hit roll needed), rolls to wound
+ * against the same Toughness, saves with AP '-' — represented here as
+ * AP=7, since this ruleset's convention is armourUsable = AP > armour, so
+ * a high AP value guarantees armour is NEVER negated, matching '-' meaning
+ * "no penetration at all" — and applies Damage 1 per unsaved wound,
+ * continuing from that branch's exact (killed, wounded_model) state. No
+ * special rules carry over to these hits, and the result does not itself
+ * trigger another Deflagrate wave.
+ *
+ * If the target unit is already fully wiped by the time a branch's
+ * Deflagrate wave would resolve, that branch contributes nothing to the
+ * wounds/unsaved distributions (there's no unit left to wound).
+ */
+export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, targetModels, totalDice) {
+  const wNeedDeflagrate = needForWound(X, T);
+  const pWoundDeflagrate = wNeedDeflagrate === null ? 0 : (7 - wNeedDeflagrate) / 6;
+  const saveDeflagrate = resolveSave(7, armour, invuln, cover); // AP '-': never negates armour
+  const pUnsavedDeflagrate = pWoundDeflagrate * saveDeflagrate.pUnsaved;
+
+  const distModels = new Array(targetModels + 1).fill(0);
+  const distWoundsCaused = new Array(totalDice + 1).fill(0);
+  const distUnsaved = new Array(totalDice + 1).fill(0);
+
+  for (const br of branches) {
+    if (br.N === 0 || br.killed >= targetModels) {
+      distModels[br.killed] += br.prob;
+      continue;
+    }
+
+    const woundPMF = binomialPMF(br.N, pWoundDeflagrate);
+    const unsavedPMF = binomialPMF(br.N, pUnsavedDeflagrate);
+
+    for (let k = 0; k <= br.N; k++) {
+      distWoundsCaused[k] += br.prob * woundPMF[k];
+      distUnsaved[k] += br.prob * unsavedPMF[k];
+    }
+
+    for (let c = 0; c <= br.N; c++) {
+      const pc = unsavedPMF[c];
+      if (pc <= 1e-14) continue;
+      const finalState = applyWoundGroupToState({ killed: br.killed, wounded_model: br.wounded_model }, c, 1, W, targetModels);
+      distModels[finalState.killed] += br.prob * pc;
+    }
+  }
+
+  return { distModels, distWoundsCaused, distUnsaved, pWoundDeflagrate, pUnsavedDeflagrate };
 }
