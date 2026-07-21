@@ -1,6 +1,7 @@
 {
   "name": "science_of_slaughter",
   "private": true,
+  "homepage": "https://gitname.github.io/Science-of-Slaughter",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
@@ -8,11 +9,15 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d build"
   },
   "dependencies": {
     "chart.js": "^4.5.1",
+    "gh-pages": "^6.3.0",
     "react": "^19.2.7",
+    "react-bootstrap": "^2.10.10",
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
