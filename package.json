@@ -1,7 +1,7 @@
 {
   "name": "science_of_slaughter",
   "private": true,
-  "homepage": "https://nickhallphysics.github.io/Science-of-Slaughter/",
+  "homepage": "https://nickhallphysics.github.io/Science-of-Slaughter",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d build"
+    "deploy": "gh-pages -d dist"
   },
   "dependencies": {
     "chart.js": "^4.5.1",
