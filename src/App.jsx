@@ -13,6 +13,7 @@ import {
   computeModelsRemovedMultiTier,
   getEffectiveCriticalThreshold,
   applyDeflagrateWave,
+  resolveDamageMitigation,
   binomialPMF,
   propagate,
   mean,
@@ -21,6 +22,9 @@ import {
 import {
   SPECIAL_RULE_DEFINITIONS,
 } from './lib/specialRules.js';
+import { 
+  DAMAGE_MITIGATION_DEFINITIONS 
+} from './lib/damageMitigation.js';
 
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip);
 
@@ -126,6 +130,37 @@ function BarChart({ series, stacked = false, hidden = {}, onToggle }) {
   );
 }
 
+function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }) {
+  const availableRules = definitions.filter((def) => !activeRules.some((r) => r.id === def.id));
+  return (
+    <>
+      {activeRules.map((rule) => {
+        const def = definitions.find((d) => d.id === rule.id);
+        if (!def) return null;
+        return (
+          <div className="rule-row" key={rule.id}>
+            <span className="rule-name">{def.label}</span>
+            <select value={rule.value} onChange={(e) => onUpdate(rule.id, Number(e.target.value))}>
+              {def.options.map((v) => (
+                <option key={v} value={v}>{v}{def.optionSuffix ?? '+'}</option>
+              ))}
+            </select>
+            <button type="button" className="rule-remove" onClick={() => onRemove(rule.id)} aria-label={`Remove ${def.label}`}>×</button>
+          </div>
+        );
+      })}
+      {availableRules.length > 0 && (
+        <select className="rule-add" value="" onChange={(e) => { if (e.target.value) onAdd(e.target.value); }}>
+          <option value="">+ Add special rule…</option>
+          {availableRules.map((def) => (
+            <option key={def.id} value={def.id}>{def.label}</option>
+          ))}
+        </select>
+      )}
+    </>
+  );
+}
+
 export default function App() {
   // firing unit
   const [bs, setBs] = useState(4);
@@ -166,6 +201,20 @@ export default function App() {
   function removeRule(id) {
     setActiveRules((prev) => prev.filter((r) => r.id !== id));
   }
+
+  const [activeMitigationRules, setActiveMitigationRules] = useState([]);
+
+  function addMitigationRule(id) {
+    const def = DAMAGE_MITIGATION_DEFINITIONS.find((d) => d.id === id);
+    if (!def) return;
+    setActiveMitigationRules((prev) => [...prev, { id, value: def.defaultValue }]);
+  }
+  function updateMitigationRuleValue(id, value) {
+    setActiveMitigationRules((prev) => prev.map((r) => (r.id === id ? { ...r, value } : r)));
+  }
+  function removeMitigationRule(id) {
+    setActiveMitigationRules((prev) => prev.filter((r) => r.id !== id));
+  }
   
   // target unit
   const [tough, setTough] = useState(4);
@@ -191,10 +240,12 @@ export default function App() {
     const pUnsavedTotal = pUnsavedTierDplus0 + pUnsavedTierDplus1 + pUnsavedTierDplus2;
     const distUnsaved = binomialPMF(totalDice, pUnsavedTotal); // Stage 3 display only
 
+    const mitigation = resolveDamageMitigation(activeMitigationRules);
+
     const tiers = [
-      { damage: dmg, pUnsaved: pUnsavedTierDplus0 },
-      { damage: dmg + 1, pUnsaved: pUnsavedTierDplus1 },
-      { damage: dmg + 2, pUnsaved: pUnsavedTierDplus2 },
+      { damage: dmg, pUnsaved: pUnsavedTierDplus0 * mitigation.pMitigationFail },
+      { damage: dmg + 1, pUnsaved: pUnsavedTierDplus1 * mitigation.pMitigationFail },
+      { damage: dmg + 2, pUnsaved: pUnsavedTierDplus2 * mitigation.pMitigationFail },
     ];
     const deflagrateRule = activeRules.find((r) => r.id === 'deflagrate');
 
@@ -207,7 +258,8 @@ export default function App() {
 
     if (deflagrateRule) {
       const deflagResult = applyDeflagrateWave(
-        branches, deflagrateRule.value, tough, armour, invuln, cover, woundsPerModel, modelsTarget, totalDice
+        branches, deflagrateRule.value, tough, armour, invuln, cover,
+        woundsPerModel, modelsTarget, totalDice, mitigation.pMitigationFail
       );
       distModels = deflagResult.distModels;
       deflagrateWoundsCaused = deflagResult.distWoundsCaused;
@@ -215,13 +267,13 @@ export default function App() {
     }
 
     const cdfModels = cdfAtLeast(distModels);
-
     return { hitNeed, pHit, wNeed, saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, 
-      deflagrateUnsaved, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels };
-      }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, activeRules]);
+      deflagrateUnsaved, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, mitigation };
+    }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, 
+      activeRules, activeMitigationRules]);
 
   const { saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, deflagrateUnsaved, hitNeed, totalDice, 
-    distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill } = results;
+    distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill, mitigation } = results;
 
   const modelsChartDist = modelsView === 'cumulative' ? cdfModels : distModels;
 
@@ -237,6 +289,10 @@ export default function App() {
   if (saveBreach.saveValue !== saveNormal.saveValue) {
     saveHint += ` Breached wounds instead use ${saveBreach.saveValue === null ? 'no save' : saveBreach.saveValue + '+ (' + saveBreach.source + ')'}.`;
   }
+
+  const mitigationHint = mitigation.mitigationValue === null
+    ? 'No Damage Mitigation active.'
+    : `Mitigation: ${mitigation.mitigationValue}+ (rolled after a failed Save).`;
 
   return (
     <>
@@ -294,44 +350,14 @@ export default function App() {
                 <label>Damage (D)</label>
                 <input type="number" min="1" max="20" value={dmg} onChange={(e) => setDmg(Number(e.target.value) || 1)} />
               </div>
-              <div className="divider-label">Special Rules</div>
-                {activeRules.map((rule) => {
-                  const def = SPECIAL_RULE_DEFINITIONS.find((d) => d.id === rule.id);
-                  return (
-                    <div className="rule-row" key={rule.id}>
-                      <span className="rule-name">{def.label}</span>
-                      <select
-                        value={rule.value}
-                        onChange={(e) => updateRuleValue(rule.id, Number(e.target.value))}
-                      >
-                        {def.options.map((v) => (
-                          <option key={v} value={v}>{v}{def.optionSuffix}</option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        className="rule-remove"
-                        onClick={() => removeRule(rule.id)}
-                        aria-label={`Remove ${def.label}`}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  );
-                })}
-
-                {availableRules.length > 0 && (
-                  <select
-                    className="rule-add"
-                    value=""
-                    onChange={(e) => { if (e.target.value) addRule(e.target.value); }}
-                  >
-                    <option value="">+ Add special rule…</option>
-                    {availableRules.map((def) => (
-                      <option key={def.id} value={def.id}>{def.label}</option>
-                    ))}
-                  </select>
-                )}
+                <div className="divider-label">Special Rules</div>
+                  <SpecialRuleList
+                    activeRules={activeRules}
+                    definitions={SPECIAL_RULE_DEFINITIONS}
+                    onAdd={addRule}
+                    onUpdate={updateRuleValue}
+                    onRemove={removeRule}
+                  />
               </div>
             </div>
 
@@ -375,6 +401,15 @@ export default function App() {
                 </select>
               </div>
               <div className="hint">{saveHint}</div>
+              <div className="divider-label">Damage Mitigation — best applicable is used</div>
+                <SpecialRuleList
+                  activeRules={activeMitigationRules}
+                  definitions={DAMAGE_MITIGATION_DEFINITIONS}
+                  onAdd={addMitigationRule}
+                  onUpdate={updateMitigationRuleValue}
+                  onRemove={removeMitigationRule}
+                />
+              <div className="hint">{mitigationHint}</div>
             </div>
           </div>
 

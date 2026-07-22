@@ -538,11 +538,11 @@ export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels)
  * Deflagrate wave would resolve, that branch contributes nothing to the
  * wounds/unsaved distributions (there's no unit left to wound).
  */
-export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, targetModels, totalDice) {
+export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, targetModels, totalDice, pMitigationFail = 1) {
   const wNeedDeflagrate = needForWound(X, T);
   const pWoundDeflagrate = wNeedDeflagrate === null ? 0 : (7 - wNeedDeflagrate) / 6;
-  const saveDeflagrate = resolveSave(7, armour, invuln, cover); // AP '-': never negates armour
-  const pUnsavedDeflagrate = pWoundDeflagrate * saveDeflagrate.pUnsaved;
+  const saveDeflagrate = resolveSave(7, armour, invuln, cover);
+  const pUnsavedDeflagrate = pWoundDeflagrate * saveDeflagrate.pUnsaved * pMitigationFail; // mitigation applies here too
 
   const distModels = new Array(targetModels + 1).fill(0);
   const distWoundsCaused = new Array(totalDice + 1).fill(0);
@@ -571,4 +571,22 @@ export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, ta
   }
 
   return { distModels, distWoundsCaused, distUnsaved, pWoundDeflagrate, pUnsavedDeflagrate };
+}
+
+/**
+ * Resolves the Damage Mitigation roll for a target unit. Unlike
+ * Armour/Invulnerable/Cover (where a model picks the single best save to
+ * use), Damage Mitigation is an ADDITIONAL, independent test rolled only
+ * after a wound has already failed its Saving Throw. If multiple Damage
+ * Mitigation rules are active, the best (lowest X) is used — same
+ * "best available" convention as the normal saves. Unlike Armour, it is
+ * not affected by AP/Breaching.
+ */
+export function resolveDamageMitigation(activeMitigationRules = []) {
+  if (activeMitigationRules.length === 0) {
+    return { mitigationValue: null, ruleId: null, pMitigate: 0, pMitigationFail: 1 };
+  }
+  const best = activeMitigationRules.reduce((a, b) => (b.value < a.value ? b : a));
+  const pMitigate = best.value <= 6 ? (7 - best.value) / 6 : 0;
+  return { mitigationValue: best.value, ruleId: best.id, pMitigate, pMitigationFail: 1 - pMitigate };
 }
