@@ -7,7 +7,7 @@
  */
 
 // ---------- special rule definitions ----------
-export const SPECIAL_RULE_DEFINITIONS = [
+export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
   {
     id: 'rending',
     label: 'Rending',
@@ -62,6 +62,20 @@ export const SPECIAL_RULE_DEFINITIONS = [
     optionSuffix: '', // this is a Strength value — render "X"
     description: 'At the end of the attack, unsaved wounds from this weapon spawn an equal number of Strength X, AP \u2013, Damage 1 hits with no special rules, resolved against the same target.',
     }
+  // future rules go here, e.g.:
+  // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
+];
+
+export const DEFENSIVE_SPECIAL_RULE_DEFINITIONS = [
+  {
+    id: 'eternalWarrior',
+    label: 'Eternal Warrior',
+    valueLabel: 'X',
+    options: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    defaultValue: 1,
+    optionSuffix: '', // a flat Damage reduction amount, not a dice threshold
+    description: 'Reduces the Damage of each Unsaved Wound allocated to this model by X, to a minimum of 1.',
+  },
   // future rules go here, e.g.:
   // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
 ];

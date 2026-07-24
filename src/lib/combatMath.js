@@ -9,7 +9,7 @@
 // ---------- to-hit / to-wound tables ----------
 
 import {
-  SPECIAL_RULE_DEFINITIONS,
+  OFFENSIVE_SPECIAL_RULE_DEFINITIONS,
 } from './specialRules.js';
 
 /** D6 result needed to hit, given Ballistic Skill. Returns null for BS10 (auto-hit). */
@@ -341,6 +341,18 @@ export function resolveAttackProbabilities(bs, S, T, activeRules = []) {
 }
 
 /**
+ * Applies the Eternal Warrior(X) special rule to a weapon's Damage value:
+ * reduces Damage by X, but never below 1. Deterministic — no dice roll
+ * involved, unlike Damage Mitigation. Returns damage unchanged if the
+ * rule isn't active.
+ */
+export function applyEternalWarrior(damage, activeTargetRules = []) {
+  const ewRule = activeTargetRules.find((r) => r.id === 'eternalWarrior');
+  if (!ewRule) return damage;
+  return Math.max(1, damage - ewRule.value);
+}
+
+/**
  * Combines the (breach, damage-tier) buckets with save resolution, folding
  * the breach axis (only relevant during the save roll) down to three
  * absolute per-die probabilities: one per damage-bonus tier.
@@ -538,11 +550,12 @@ export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels)
  * Deflagrate wave would resolve, that branch contributes nothing to the
  * wounds/unsaved distributions (there's no unit left to wound).
  */
-export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, targetModels, totalDice, pMitigationFail = 1) {
+export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, targetModels, totalDice, pMitigationFail = 1, activeTargetRules = []) {
   const wNeedDeflagrate = needForWound(X, T);
   const pWoundDeflagrate = wNeedDeflagrate === null ? 0 : (7 - wNeedDeflagrate) / 6;
   const saveDeflagrate = resolveSave(7, armour, invuln, cover);
-  const pUnsavedDeflagrate = pWoundDeflagrate * saveDeflagrate.pUnsaved * pMitigationFail; // mitigation applies here too
+  const pUnsavedDeflagrate = pWoundDeflagrate * saveDeflagrate.pUnsaved * pMitigationFail;
+  const deflagrateDamage = applyEternalWarrior(1, activeTargetRules);
 
   const distModels = new Array(targetModels + 1).fill(0);
   const distWoundsCaused = new Array(totalDice + 1).fill(0);
@@ -553,7 +566,6 @@ export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, ta
       distModels[br.killed] += br.prob;
       continue;
     }
-
     const woundPMF = binomialPMF(br.N, pWoundDeflagrate);
     const unsavedPMF = binomialPMF(br.N, pUnsavedDeflagrate);
 
@@ -561,11 +573,10 @@ export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, ta
       distWoundsCaused[k] += br.prob * woundPMF[k];
       distUnsaved[k] += br.prob * unsavedPMF[k];
     }
-
     for (let c = 0; c <= br.N; c++) {
       const pc = unsavedPMF[c];
       if (pc <= 1e-14) continue;
-      const finalState = applyWoundGroupToState({ killed: br.killed, wounded_model: br.wounded_model }, c, 1, W, targetModels);
+      const finalState = applyWoundGroupToState({ killed: br.killed, wounded_model: br.wounded_model }, c, deflagrateDamage, W, targetModels);
       distModels[finalState.killed] += br.prob * pc;
     }
   }

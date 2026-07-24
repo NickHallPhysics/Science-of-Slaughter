@@ -1,13 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import {
+  mean,
   needForBS,
   needForWound,
+  applyEternalWarrior,
+  applyDeflagrateWave,
+  computeModelsRemovedMultiTier,
   pFromNeed,
   resolveHitAndWound,
   resolveUnsavedGivenHit,
 } from './combatMath.js';
 import {
-  SPECIAL_RULE_DEFINITIONS,
+  OFFENSIVE_SPECIAL_RULE_DEFINITIONS,
+  DEFENSIVE_SPECIAL_RULE_DEFINITIONS,
 } from './specialRules.js';
 
 describe('resolveHitAndWound — Rending', () => {
@@ -153,5 +158,53 @@ describe('resolveUnsavedGivenHit', () => {
   it('reduces to the plain single-save case when there are no breach wounds', () => {
     const { pUnsavedGivenHit, saveNormal } = resolveUnsavedGivenHit(0, 0.5, 3, 4, 7, 7);
     expect(pUnsavedGivenHit).toBeCloseTo(0.5 * saveNormal.pUnsaved, 9);
+  });
+});
+
+describe('applyEternalWarrior', () => {
+  it('no rule active -> damage unchanged', () => {
+    expect(applyEternalWarrior(3, [])).toBe(3);
+  });
+  it('reduces damage by X', () => {
+    expect(applyEternalWarrior(5, [{ id: 'eternalWarrior', value: 2 }])).toBe(3);
+  });
+  it('never reduces below 1', () => {
+    expect(applyEternalWarrior(2, [{ id: 'eternalWarrior', value: 10 }])).toBe(1);
+    expect(applyEternalWarrior(1, [{ id: 'eternalWarrior', value: 1 }])).toBe(1);
+  });
+});
+
+describe('computeModelsRemovedMultiTier — with Eternal Warrior applied to tier damage', () => {
+  it('reduces expected kills compared to no reduction', () => {
+    const D = 2, W = 4, targetModels = 3, totalDice = 8;
+    const tiers = [{ damage: 2, pUnsaved: 0.2 }, { damage: 3, pUnsaved: 0.15 }];
+    const tiersWithEW = [
+      { damage: applyEternalWarrior(2, [{ id: 'eternalWarrior', value: 2 }]), pUnsaved: 0.2 },
+      { damage: applyEternalWarrior(3, [{ id: 'eternalWarrior', value: 2 }]), pUnsaved: 0.15 },
+    ];
+    const { distModels: baseline } = computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels);
+    const { distModels: reduced } = computeModelsRemovedMultiTier(totalDice, tiersWithEW, W, targetModels);
+    expect(mean(reduced)).toBeLessThanOrEqual(mean(baseline));
+  });
+
+  it('two tiers collapsing to the same effective damage still sums correctly (order-invariance holds)', () => {
+    const W = 4, targetModels = 3, totalDice = 8;
+    const strongEW = [{ id: 'eternalWarrior', value: 10 }];
+    const tiers = [
+      { damage: applyEternalWarrior(2, strongEW), pUnsaved: 0.2 },
+      { damage: applyEternalWarrior(3, strongEW), pUnsaved: 0.15 },
+    ];
+    const { distModels } = computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels);
+    const { distModels: singleTierRef } = computeModelsRemovedMultiTier(totalDice, [{ damage: 1, pUnsaved: 0.35 }], W, targetModels);
+    for (let k = 0; k <= targetModels; k++) expect(distModels[k]).toBeCloseTo(singleTierRef[k], 9);
+  });
+});
+
+describe('applyDeflagrateWave — Eternal Warrior never affects its flat Damage-1 wounds', () => {
+  it('Deflagrate damage stays 1 regardless of Eternal Warrior value', () => {
+    const { branches } = computeModelsRemovedMultiTier(6, [{ damage: 1, pUnsaved: 0.9 }], 1, 2);
+    const withoutEW = applyDeflagrateWave(branches, 4, 4, 4, 7, 7, 1, 2, 6, 1, []);
+    const withEW = applyDeflagrateWave(branches, 4, 4, 4, 7, 7, 1, 2, 6, 1, [{ id: 'eternalWarrior', value: 5 }]);
+    for (let k = 0; k <= 2; k++) expect(withEW.distModels[k]).toBeCloseTo(withoutEW.distModels[k], 9);
   });
 });
