@@ -61,7 +61,16 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     defaultValue: 5,
     optionSuffix: '', // this is a Strength value — render "X"
     description: 'At the end of the attack, unsaved wounds from this weapon spawn an equal number of Strength X, AP \u2013, Damage 1 hits with no special rules, resolved against the same target.',
-    }
+  },
+  {
+    id: 'murderous',
+    label: 'Murderous',
+    valueLabel: 'X',
+    options: [2, 3, 4, 5, 6],
+    defaultValue: 6,
+    optionSuffix: '+', // this is a threshold value, — render "X+"
+    description: 'A to-wound roll ≥ X (before modifiers) ignores the Eternal Warrior (X) special rule',
+  },
   // future rules go here, e.g.:
   // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
 ];

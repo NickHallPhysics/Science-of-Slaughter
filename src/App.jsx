@@ -250,8 +250,10 @@ export default function App() {
       resolveAttackProbabilities(bs, str, tough, activeOffensiveRules);
 
     const critNeed = getEffectiveCriticalThreshold(bs, activeOffensiveRules);
-    const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, saveNormal, saveBreach } =
-      resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
+    const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2,
+        pUnsavedTierDplus0Murderous, pUnsavedTierDplus1Murderous, pUnsavedTierDplus2Murderous,
+        saveNormal, saveBreach } = resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
+    
 
     const totalDice = fp * modelsFiring;
     const distHits = binomialPMF(totalDice, pHit);
@@ -262,11 +264,18 @@ export default function App() {
 
     const mitigation = resolveDamageMitigation(activeMitigationRules);
 
+    const pUnsavedDplus0_nonMurd = pUnsavedTierDplus0 - pUnsavedTierDplus0Murderous;
+    const pUnsavedDplus1_nonMurd = pUnsavedTierDplus1 - pUnsavedTierDplus1Murderous;
+    const pUnsavedDplus2_nonMurd = pUnsavedTierDplus2 - pUnsavedTierDplus2Murderous;
+
     const tiers = [
-        { damage: applyEternalWarrior(dmg, activeDefensiveRules), pUnsaved: pUnsavedTierDplus0 * mitigation.pMitigationFail },
-        { damage: applyEternalWarrior(dmg + 1, activeDefensiveRules), pUnsaved: pUnsavedTierDplus1 * mitigation.pMitigationFail },
-        { damage: applyEternalWarrior(dmg + 2, activeDefensiveRules), pUnsaved: pUnsavedTierDplus2 * mitigation.pMitigationFail },
-      ];
+      { damage: applyEternalWarrior(dmg, activeDefensiveRules), pUnsaved: pUnsavedDplus0_nonMurd * mitigation.pMitigationFail },
+      { damage: dmg, pUnsaved: pUnsavedTierDplus0Murderous * mitigation.pMitigationFail }, // Murderous: EW blocked, raw damage
+      { damage: applyEternalWarrior(dmg + 1, activeDefensiveRules), pUnsaved: pUnsavedDplus1_nonMurd * mitigation.pMitigationFail },
+      { damage: dmg + 1, pUnsaved: pUnsavedTierDplus1Murderous * mitigation.pMitigationFail },
+      { damage: applyEternalWarrior(dmg + 2, activeDefensiveRules), pUnsaved: pUnsavedDplus2_nonMurd * mitigation.pMitigationFail },
+      { damage: dmg + 2, pUnsaved: pUnsavedTierDplus2Murderous * mitigation.pMitigationFail },
+    ];
 
     const deflagrateRule = activeOffensiveRules.find((r) => r.id === 'deflagrate');
 

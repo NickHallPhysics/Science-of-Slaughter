@@ -692,3 +692,101 @@ describe('applyDeflagrateWave — wound/unsaved distributions for charting', () 
     expect(distUnsaved.reduce((a, b) => a + b, 0)).toBeLessThan(1);
   });
 });
+
+describe('resolveAttackProbabilities — Murderous bucket tracking', () => {
+  it('Murderous buckets are a subset of their base bucket (never exceed it)', () => {
+    const { buckets } = resolveAttackProbabilities(4, 4, 4, [
+      { id: 'breaching', value: 3 }, { id: 'murderous', value: 5 },
+    ]);
+    expect(buckets.BreachDplus0Murderous).toBeLessThanOrEqual(buckets.BreachDplus0 + 1e-9);
+    expect(buckets.noBreachDplus0Murderous).toBeLessThanOrEqual(buckets.noBreachDplus0 + 1e-9);
+  });
+
+  it('a Rending/Critical-forced wound is always Murderous, regardless of X', () => {
+    const { buckets } = resolveAttackProbabilities(4, 1, 20, [
+      { id: 'rending', value: 4 }, { id: 'murderous', value: 6 },
+    ]);
+    const total = buckets.BreachDplus0 + buckets.noBreachDplus0;
+    const totalMurderous = buckets.BreachDplus0Murderous + buckets.noBreachDplus0Murderous;
+    expect(totalMurderous).toBeCloseTo(total, 9);
+  });
+
+  it('with no Murderous rule active, all Murderous buckets are 0 (backward compatible)', () => {
+    const { buckets } = resolveAttackProbabilities(4, 4, 4, [{ id: 'breaching', value: 3 }]);
+    expect(buckets.BreachDplus0Murderous).toBe(0);
+    expect(buckets.noBreachDplus0Murderous).toBe(0);
+  });
+});
+
+describe('resolveFinalOutcomeProbabilities — Murderous split', () => {
+  it('matches an independent hand-derived breach/murderous cross-tabulation', () => {
+    const bs = 4, S = 4, T = 4, ap = 1, armour = 4, invuln = 7, cover = 7;
+    const { buckets } = resolveAttackProbabilities(bs, S, T, [
+      { id: 'breaching', value: 3 }, { id: 'murderous', value: 5 },
+    ]);
+    const outcome = resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
+
+    const hitNeed = needForBS(bs), wNeed = needForWound(S, T);
+    let handNonMurd = 0, handMurd = 0;
+    for (let hd = 1; hd <= 6; hd++) {
+      if (hd < hitNeed) continue;
+      for (let wd = 1; wd <= 6; wd++) {
+        if (wd < wNeed) continue;
+        const breach = wd >= 3, murderous = wd >= 5;
+        const save = breach ? resolveSave(2, armour, invuln, cover) : resolveSave(ap, armour, invuln, cover);
+        const p = (1 / 6) * (1 / 6) * save.pUnsaved;
+        if (murderous) handMurd += p; else handNonMurd += p;
+      }
+    }
+    const pUnsavedD_nonMurd = outcome.pUnsavedTierDplus0 - outcome.pUnsavedTierDplus0Murderous;
+    expect(pUnsavedD_nonMurd).toBeCloseTo(handNonMurd, 9);
+    expect(outcome.pUnsavedTierDplus0Murderous).toBeCloseTo(handMurd, 9);
+  });
+
+  it('Murderous subset never exceeds its parent tier', () => {
+    const { buckets } = resolveAttackProbabilities(4, 4, 4, [{ id: 'murderous', value: 3 }]);
+    const outcome = resolveFinalOutcomeProbabilities(buckets, 1, 4, 7, 7);
+    expect(outcome.pUnsavedTierDplus0Murderous).toBeLessThanOrEqual(outcome.pUnsavedTierDplus0 + 1e-9);
+  });
+});
+
+describe('computeModelsRemovedMultiTier — Murderous + Eternal Warrior full pipeline', () => {
+  it('matches brute-force enumeration for a small case', () => {
+    const bs = 4, S = 4, T = 4, ap = 1, D = 2, armour = 4, invuln = 7, cover = 7;
+    const totalDice = 4, W = 5, targetModels = 2;
+    const activeTargetRules = [{ id: 'eternalWarrior', value: 1 }];
+
+    const { buckets } = resolveAttackProbabilities(bs, S, T, [
+      { id: 'breaching', value: 3 }, { id: 'murderous', value: 5 },
+    ]);
+    const outcome = resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
+    const pUnsavedD_nonMurd = outcome.pUnsavedTierDplus0 - outcome.pUnsavedTierDplus0Murderous;
+
+    const tiers = [
+      { damage: applyEternalWarrior(D, activeTargetRules), pUnsaved: pUnsavedD_nonMurd },
+      { damage: D, pUnsaved: outcome.pUnsavedTierDplus0Murderous },
+    ];
+    const { distModels } = computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels);
+
+    // brute-force: each die independently misses, unsaved-normal (EW applies), or unsaved-murderous (EW blocked)
+    const effD = applyEternalWarrior(D, activeTargetRules);
+    const pMiss = 1 - pUnsavedD_nonMurd - outcome.pUnsavedTierDplus0Murderous;
+    const expected = {};
+    const add = (k, p) => { expected[k] = (expected[k] || 0) + p; };
+    const outcomes = ['miss', 'normal', 'murd'];
+    for (const a of outcomes) for (const b of outcomes) for (const c of outcomes) for (const d of outcomes) {
+      const seq = [a, b, c, d];
+      const p = seq.reduce((acc, x) => acc * (x === 'miss' ? pMiss : x === 'normal' ? pUnsavedD_nonMurd : outcome.pUnsavedTierDplus0Murderous), 1);
+      const nNormal = seq.filter((x) => x === 'normal').length;
+      const nMurd = seq.filter((x) => x === 'murd').length;
+      let state = { killed: 0, wounded_model: W };
+      const groups = effD <= D ? [[effD, nNormal], [D, nMurd]] : [[D, nMurd], [effD, nNormal]];
+      for (const [dmgVal, count] of groups) {
+        if (state.killed >= targetModels) break;
+        state = applyWoundGroupToState(state, count, dmgVal, W, targetModels);
+      }
+      add(state.killed, p);
+    }
+    for (let k = 0; k <= targetModels; k++) expect(distModels[k]).toBeCloseTo(expected[k] || 0, 9);
+  });
+});

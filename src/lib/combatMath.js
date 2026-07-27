@@ -263,35 +263,44 @@ export function resolveAttackProbabilities(bs, S, T, activeRules = []) {
   const poisonedRule = activeRules.find((r) => r.id === 'poisoned');
   const breachingRule = activeRules.find((r) => r.id === 'breaching');
   const shredRule = activeRules.find((r) => r.id === 'shred');
+  const murderousRule = activeRules.find((r) => r.id === 'murderous');
 
   const poisonThreshold = poisonedRule ? poisonedRule.value : 7;
   const wThreshold = wNeed === null ? 7 : wNeed;
-  const effWThreshold = Math.min(wThreshold, poisonThreshold);
+  const m = Math.min(wThreshold, poisonThreshold);
   const Xbreach = breachingRule ? breachingRule.value : null;
   const Xshred = shredRule ? shredRule.value : null;
   const Xrend = rendingRule ? rendingRule.value : null;
   const Xcrit = getEffectiveCriticalThreshold(bs, activeRules);
-
-  
-  const buckets = { BreachDplus0: 0, BreachDplus1: 0, BreachDplus2: 0, noBreachDplus0: 0, noBreachDplus1: 0, noBreachDplus2: 0 };
+  const Xmurderous = murderousRule ? murderousRule.value : null;
 
   const TIER_SUFFIX = { 0: 'Dplus0', 1: 'Dplus1', 2: 'Dplus2' };
-  const addWound = (breach, dmgBonus, prob) => {
-    const key = (breach ? 'Breach' : 'noBreach') + TIER_SUFFIX[dmgBonus];
+  const buckets = {};
+  for (const suf of Object.values(TIER_SUFFIX)) {
+    buckets['Breach' + suf] = 0;
+    buckets['noBreach' + suf] = 0;
+    buckets['Breach' + suf + 'Murderous'] = 0;   // subset of BreachDplusN that's also Murderous
+    buckets['noBreach' + suf + 'Murderous'] = 0;
+  }
+
+  const addWound = (breach, dmgBonus, murderous, prob) => {
+    const suf = TIER_SUFFIX[dmgBonus];
+    const key = (breach ? 'Breach' : 'noBreach') + suf;
     buckets[key] += prob;
+    if (murderous) buckets[key + 'Murderous'] += prob;
   };
 
-  const classifyWoundDie = (d2, forceShred) => {
-    if (d2 < effWThreshold) return null;
+  const classifyWoundDie = (d2) => {
+    if (d2 < m) return null;
     const breach = Xbreach !== null && d2 >= Xbreach;
-    const shred = forceShred || (Xshred !== null && d2 >= Xshred);
-    return { breach, shred };
+    const shred = Xshred !== null && d2 >= Xshred;
+    const murderous = Xmurderous !== null && d2 >= Xmurderous;
+    return { breach, shred, murderous };
   };
 
   let pHit;
 
   if (hitNeed === null) {
-    // BS10: hit die assumed to be a natural 6.
     pHit = 1;
     const isRending = !!rendingRule;
     const isCritical = Xcrit !== null;
@@ -299,21 +308,20 @@ export function resolveAttackProbabilities(bs, S, T, activeRules = []) {
     if (forcedSix) {
       const breach = !!breachingRule;
       const shred = !!shredRule;
-      addWound(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), 1);
+      const murderous = Xmurderous !== null; // forced six always satisfies any X <= 6
+      addWound(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), murderous, 1);
     } else {
       for (let d2 = 1; d2 <= 6; d2++) {
-        const res = classifyWoundDie(d2, false);
+        const res = classifyWoundDie(d2);
         if (!res) continue;
-        addWound(res.breach, res.shred ? 1 : 0, 1 / 6);
+        addWound(res.breach, res.shred ? 1 : 0, res.murderous, 1 / 6);
       }
     }
   } else {
-    // FIX: effHitNeed must account for Critical Hit's threshold too, not just Rending's.
     const candidateThresholds = [hitNeed];
     if (Xrend !== null) candidateThresholds.push(Xrend);
     if (Xcrit !== null) candidateThresholds.push(Xcrit);
     const effHitNeed = Math.min(...candidateThresholds);
-
     pHit = pFromNeed(effHitNeed);
 
     for (let d = effHitNeed; d <= 6; d++) {
@@ -323,18 +331,21 @@ export function resolveAttackProbabilities(bs, S, T, activeRules = []) {
       if (forcedSix) {
         const breach = !!breachingRule;
         const shred = !!shredRule;
-        addWound(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), 1 / 6);
+        const murderous = Xmurderous !== null;
+        addWound(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), murderous, 1 / 6);
       } else {
         for (let d2 = 1; d2 <= 6; d2++) {
-          const res = classifyWoundDie(d2, false);
+          const res = classifyWoundDie(d2);
           if (!res) continue;
-          addWound(res.breach, res.shred ? 1 : 0, (1 / 6) * (1 / 6));
+          addWound(res.breach, res.shred ? 1 : 0, res.murderous, (1 / 6) * (1 / 6));
         }
       }
     }
   }
 
-  const pWoundAbsolute = Object.values(buckets).reduce((a, b) => a + b, 0);
+  // sum only the 6 BASE keys — the *Murderous keys are subsets, summing them too would double-count
+  const baseKeys = ['BreachDplus0', 'BreachDplus1', 'BreachDplus2', 'noBreachDplus0', 'noBreachDplus1', 'noBreachDplus2'];
+  const pWoundAbsolute = baseKeys.reduce((sum, k) => sum + buckets[k], 0);
   const pWound = pHit > 0 ? pWoundAbsolute / pHit : 0;
 
   return { pHit, pWound, hitNeed, wNeed, buckets };
@@ -359,13 +370,22 @@ export function applyEternalWarrior(damage, activeTargetRules = []) {
  */
 export function resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover) {
   const saveNormal = resolveSave(ap, armour, invuln, cover);
-  const saveBreach = resolveSave(2, armour, invuln, cover); // AP2 override
+  const saveBreach = resolveSave(2, armour, invuln, cover);
 
   const pUnsavedTierDplus0 = buckets.BreachDplus0 * saveBreach.pUnsaved + buckets.noBreachDplus0 * saveNormal.pUnsaved;
   const pUnsavedTierDplus1 = buckets.BreachDplus1 * saveBreach.pUnsaved + buckets.noBreachDplus1 * saveNormal.pUnsaved;
   const pUnsavedTierDplus2 = buckets.BreachDplus2 * saveBreach.pUnsaved + buckets.noBreachDplus2 * saveNormal.pUnsaved;
 
-  return { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, saveNormal, saveBreach };
+  // Murderous-specific subset of each tier above — these wounds are immune to Eternal Warrior.
+  const pUnsavedTierDplus0Murderous = buckets.BreachDplus0Murderous * saveBreach.pUnsaved + buckets.noBreachDplus0Murderous * saveNormal.pUnsaved;
+  const pUnsavedTierDplus1Murderous = buckets.BreachDplus1Murderous * saveBreach.pUnsaved + buckets.noBreachDplus1Murderous * saveNormal.pUnsaved;
+  const pUnsavedTierDplus2Murderous = buckets.BreachDplus2Murderous * saveBreach.pUnsaved + buckets.noBreachDplus2Murderous * saveNormal.pUnsaved;
+
+  return {
+    pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2,
+    pUnsavedTierDplus0Murderous, pUnsavedTierDplus1Murderous, pUnsavedTierDplus2Murderous,
+    saveNormal, saveBreach,
+  };
 }
 
 /**
