@@ -227,3 +227,13 @@ footer{
 .mean-deflagrate .m-val{
   color:#7a5195; /* matches COLORS.deflagrate's hue, opaque for text */
 }
+
+.rule-fixed-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 3px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-dim);
+  border-radius: 2px;
+}

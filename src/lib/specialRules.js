@@ -85,6 +85,22 @@ export const DEFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     optionSuffix: '', // a flat Damage reduction amount, not a dice threshold
     description: 'Reduces the Damage of each Unsaved Wound allocated to this model by X, to a minimum of 1.',
   },
+  {
+    id: 'salamanders',
+    label: 'Legiones Astartes: Salamanders',
+    valueLabel: 'X',
+    fixedValue: 3,
+    optionSuffix: '', // a flat Damage reduction amount, not a dice threshold
+    description: 'Wound Tests made against Salamanders fail on the unmodified roll of 1 or 2.',
+  },
+  {
+    id: 'ironHands',
+    label: 'Legiones Astartes: Iron Hands',
+    valueLabel: 'X',
+    fixedValue: 1,
+    optionSuffix: '', // a flat Damage reduction amount, not a dice threshold
+    description: 'Shooting Attacks targeting Iron Hands suffer a -1 Strength penalty.',
+  },
   // future rules go here, e.g.:
   // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
 ];

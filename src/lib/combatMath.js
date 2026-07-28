@@ -8,10 +8,6 @@
 
 // ---------- to-hit / to-wound tables ----------
 
-import {
-  OFFENSIVE_SPECIAL_RULE_DEFINITIONS,
-} from './specialRules.js';
-
 /** D6 result needed to hit, given Ballistic Skill. Returns null for BS10 (auto-hit). */
 export function needForBS(bs) {
   if (bs <= 1) return 6;
@@ -39,95 +35,6 @@ export function needForWound(S, T) {
 }
 
 /**
- * Resolve the combined hit/wound probabilities for an attack, accounting
- * for special rules (i.e. Rending (X)) if present. Returns the two numbers 
- * you feed straight into binomialPMF(totalDice, pHit) and propagate(distHits, pWound) —
- * the rest of the pipeline is unchanged.
- *
- * @param {number} bs
- * @param {number} S
- * @param {number} T
- * @param {Array<{id: string, value: number}>} activeRules
- */
-/**
- * @returns {{ pHit, pWound, pBreachWound, pNoBreachWound, hitNeed, wNeed }}
- * pWound = P(wound | hit) — unchanged meaning from before.
- * pBreachWound = P(wound AND breach | hit)
- * pNoBreachWound = P(wound AND NOT breach | hit)
- * pBreachWound + pNoBreachWound === pWound, always.
- */
-export function resolveHitAndWound(bs, S, T, activeRules = []) {
-  const hitNeed = needForBS(bs);
-  const wNeed = needForWound(S, T);
-
-  const rendingRule = activeRules.find((r) => r.id === 'rending');
-  const poisonedRule = activeRules.find((r) => r.id === 'poisoned');
-  const breachingRule = activeRules.find((r) => r.id === 'breaching');
-
-  const poisonThreshold = poisonedRule ? poisonedRule.value : 7; // 7 = "never"
-  const wThreshold = wNeed === null ? 7 : wNeed;
-  const effWThreshold = Math.min(wThreshold, poisonThreshold); // effective wound-success threshold (real die)
-  const breachThreshold = breachingRule ? breachingRule.value : null; // breach threshold, or null if absent
-
-  // helper: P(a real d6 roll >= threshold), threshold possibly > 6 meaning "never"
-  const pAtLeast = (threshold) => (threshold <= 6 ? (7 - threshold) / 6 : 0);
-
-  // BS10: hit die is assumed to be a natural 6.
-  if (hitNeed === null) {
-    if (rendingRule) {
-      // Natural 6 hit die always satisfies Rending's X (X is always <= 6),
-      // so the wound is forced regardless of Toughness/Poisoned/anything else.
-      return {
-        pHit: 1,
-        pWound: 1,
-        pBreachWound: breachThreshold !== null ? 1 : 0,
-        pNoBreachWound: breachThreshold !== null ? 0 : 1,
-        hitNeed, wNeed,
-      };
-    }
-    const pWound = pAtLeast(effWThreshold);
-    const pBreachWound = breachThreshold !== null ? pAtLeast(Math.max(effWThreshold, breachThreshold)) : 0;
-    return {
-      pHit: 1,
-      pWound,
-      pBreachWound,
-      pNoBreachWound: pWound - pBreachWound,
-      hitNeed, wNeed,
-    };
-  }
-
-  if (!rendingRule) {
-    const pHit = pFromNeed(hitNeed);
-    const pWound = pAtLeast(effWThreshold);
-    const pBreachWound = breachThreshold !== null ? pAtLeast(Math.max(effWThreshold, breachThreshold)) : 0;
-    return { pHit, pWound, pBreachWound, pNoBreachWound: pWound - pBreachWound, hitNeed, wNeed };
-  }
-
-  // Rending present: split hits into rending-portion (auto-wound, auto-breach) and
-  // normal-portion (real roll, subject to m and X as usual).
-  const Xr = rendingRule.value;
-  const effHitNeed = Math.min(hitNeed, Xr);
-  const pHit = pFromNeed(effHitNeed);
-
-  const pRendPortion = pAtLeast(Xr);          // unconditional-per-die
-  const pNormalPortion = pHit - pRendPortion; // unconditional-per-die
-
-  const pNormalWound = pAtLeast(effWThreshold);
-  const pNormalBreachWound = breachThreshold !== null ? pAtLeast(Math.max(effWThreshold, breachThreshold)) : 0;
-
-  const pWoundTotal = pRendPortion * 1 + pNormalPortion * pNormalWound;
-  const pBreachWoundTotal = pRendPortion * (breachThreshold !== null ? 1 : 0) + pNormalPortion * pNormalBreachWound;
-
-  return {
-    pHit,
-    pWound: pHit > 0 ? pWoundTotal / pHit : 0,
-    pBreachWound: pHit > 0 ? pBreachWoundTotal / pHit : 0,
-    pNoBreachWound: pHit > 0 ? (pWoundTotal - pBreachWoundTotal) / pHit : 0,
-    hitNeed, wNeed,
-  };
-}
-
-/**
  * Resolve which save (if any) applies, and the probability a wound gets through.
  * armour/invuln/cover are the D6 values needed (2-6), or 7 to mean "none".
  * Per the house rule: Armour can only be used if AP > armour save value.
@@ -145,17 +52,6 @@ export function resolveSave(AP, armour, invuln, cover) {
   const best = candidates.reduce((a, b) => (b.value < a.value ? b : a));
   const pSave = best.value <= 6 ? (7 - best.value) / 6 : 0;
   return { saveValue: best.value, source: best.source, pSave, pUnsaved: 1 - pSave, armourUsable };
-}
-
-/**
- * Combine breach/no-breach wound probabilities with their respective saves.
- * Breaching forces AP to 2 for the save roll only — nothing else changes.
- */
-export function resolveUnsavedGivenHit(pBreachWound, pNoBreachWound, ap, armour, invuln, cover) {
-  const saveNormal = resolveSave(ap, armour, invuln, cover);
-  const saveBreach = resolveSave(2, armour, invuln, cover); // AP2 override
-  const pUnsavedGivenHit = pBreachWound * saveBreach.pUnsaved + pNoBreachWound * saveNormal.pUnsaved;
-  return { pUnsavedGivenHit, saveNormal, saveBreach };
 }
 
 // ---------- probability distributions ----------
@@ -240,8 +136,8 @@ export function getInnateCriticalX(bs) {
  * Critical Hit granted by high Ballistic Skill. Returns null if neither
  * applies.
  */
-export function getEffectiveCriticalThreshold(bs, activeRules = []) {
-  const criticalRule = activeRules.find((r) => r.id === 'criticalHit');
+export function getEffectiveCriticalThreshold(bs, activeOffensiveRules = []) {
+  const criticalRule = activeOffensiveRules.find((r) => r.id === 'criticalHit');
   const innateX = getInnateCriticalX(bs);
   const explicitX = criticalRule ? criticalRule.value : null;
   const candidates = [innateX, explicitX].filter((x) => x !== null);
@@ -255,23 +151,29 @@ export function getEffectiveCriticalThreshold(bs, activeRules = []) {
  * All bucket values are ABSOLUTE probabilities (already include pHit), not
  * conditional on a hit.
  */
-export function resolveAttackProbabilities(bs, S, T, activeRules = []) {
+export function resolveAttackProbabilities(bs, S, T, activeOffensiveRules = [], activeDefensiveRules = []) {
   const hitNeed = needForBS(bs);
-  const wNeed = needForWound(S, T);
 
-  const rendingRule = activeRules.find((r) => r.id === 'rending');
-  const poisonedRule = activeRules.find((r) => r.id === 'poisoned');
-  const breachingRule = activeRules.find((r) => r.id === 'breaching');
-  const shredRule = activeRules.find((r) => r.id === 'shred');
-  const murderousRule = activeRules.find((r) => r.id === 'murderous');
+  const ironHandsRule = activeDefensiveRules.find((r) => r.id === 'ironHands');
+  const effS = ironHandsRule ? Math.max(1, S-ironHandsRule.value) : S;
+  const wNeed = needForWound(effS, T);
+
+  const rendingRule = activeOffensiveRules.find((r) => r.id === 'rending');
+  const poisonedRule = activeOffensiveRules.find((r) => r.id === 'poisoned');
+  const breachingRule = activeOffensiveRules.find((r) => r.id === 'breaching');
+  const shredRule = activeOffensiveRules.find((r) => r.id === 'shred');
+  const murderousRule = activeOffensiveRules.find((r) => r.id === 'murderous');
+
+  const salamandersRule = activeDefensiveRules.find((r) => r.id === 'salamanders');
 
   const poisonThreshold = poisonedRule ? poisonedRule.value : 7;
+  const salamandersThreshold = salamandersRule ? salamandersRule.value : 2;
   const wThreshold = wNeed === null ? 7 : wNeed;
-  const m = Math.min(wThreshold, poisonThreshold);
+  const effWThreshold = Math.max(salamandersThreshold, Math.min(wThreshold, poisonThreshold)); // effective wound-success threshold (real die)
   const Xbreach = breachingRule ? breachingRule.value : null;
   const Xshred = shredRule ? shredRule.value : null;
   const Xrend = rendingRule ? rendingRule.value : null;
-  const Xcrit = getEffectiveCriticalThreshold(bs, activeRules);
+  const Xcrit = getEffectiveCriticalThreshold(bs, activeOffensiveRules);
   const Xmurderous = murderousRule ? murderousRule.value : null;
 
   const TIER_SUFFIX = { 0: 'Dplus0', 1: 'Dplus1', 2: 'Dplus2' };
@@ -291,7 +193,7 @@ export function resolveAttackProbabilities(bs, S, T, activeRules = []) {
   };
 
   const classifyWoundDie = (d2) => {
-    if (d2 < m) return null;
+    if (d2 < effWThreshold) return null;
     const breach = Xbreach !== null && d2 >= Xbreach;
     const shred = Xshred !== null && d2 >= Xshred;
     const murderous = Xmurderous !== null && d2 >= Xmurderous;

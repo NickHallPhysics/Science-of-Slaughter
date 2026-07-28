@@ -3,12 +3,10 @@ import {
   needForBS,
   pFromNeed,
   needForWound,
-  getInnateCriticalX,
-  getEffectiveCriticalThreshold,
-  resolveHitAndWound,
   resolveSave,
   resolveAttackProbabilities,
   resolveFinalOutcomeProbabilities,
+  computeModelsRemoved,
   computeModelsRemovedWithFireGroups,
   computeModelsRemovedMultiTier,
   applyWoundGroupToState,
@@ -17,8 +15,15 @@ import {
   propagate,
   mean,
   cdfAtLeast,
-  computeModelsRemoved,
 } from './combatMath.js';
+
+// This file covers the generic, rule-agnostic math: the to-hit/to-wound
+// tables, saves, probability-distribution mechanics, the wound/casualty
+// state machine, and the multi-tier engine's own structural correctness.
+// Behaviour specific to a *named* special rule (Rending, Shred, Critical
+// Hit, Murderous, Eternal Warrior, Salamanders, Iron Hands, Deflagrate,
+// Damage Mitigation, ...) lives in specialRules.test.js / damageMitigation.test.js
+// instead, so each kind of behaviour is tested in exactly one place.
 
 describe('needForBS / pFromNeed', () => {
   it('BS1 needs 6+', () => expect(needForBS(1)).toBe(6));
@@ -76,6 +81,49 @@ describe('resolveSave', () => {
   });
 });
 
+describe('resolveFinalOutcomeProbabilities — core breach/save combination', () => {
+  // Breaching is used here purely as a vehicle to populate the Breach*
+  // buckets; the thing under test is resolveFinalOutcomeProbabilities'
+  // own save-combination logic, not Breaching's rule-specific behaviour
+  // (that's covered separately in specialRules.test.js).
+  it('matches an independent brute-force enumeration over hit-die/wound-die outcomes', () => {
+    const bs = 4, S = 3, T = 4, X = 5, ap = 1, armour = 4, invuln = 7, cover = 7;
+    const hitNeed = needForBS(bs), wNeed = needForWound(S, T);
+    let expectedUnsaved = 0;
+    for (let hitDie = 1; hitDie <= 6; hitDie++) {
+      if (hitDie < hitNeed) continue;
+      for (let woundDie = 1; woundDie <= 6; woundDie++) {
+        if (woundDie < wNeed) continue;
+        const breach = woundDie >= X;
+        const save = breach ? resolveSave(2, armour, invuln, cover) : resolveSave(ap, armour, invuln, cover);
+        expectedUnsaved += (1 / 36) * save.pUnsaved;
+      }
+    }
+    const { buckets } = resolveAttackProbabilities(bs, S, T, [{ id: 'breaching', value: X }]);
+    const outcome = resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
+    const totalUnsaved = outcome.pUnsavedTierDplus0 + outcome.pUnsavedTierDplus1 + outcome.pUnsavedTierDplus2;
+    expect(totalUnsaved).toBeCloseTo(expectedUnsaved, 9);
+  });
+
+  it('a breach wound always uses AP2 for its save, distinct from the weapon\'s real AP', () => {
+    // armour=3, real AP=6: under this ruleset's armourUsable = AP > armour convention,
+    // AP6 is "weak" enough that armour would normally still apply (saveNormal).
+    // The breach override forces AP2 regardless, which is NOT enough to exceed armour=3,
+    // so armour gets negated under breach even though the weapon's real AP wouldn't have.
+    const { buckets } = resolveAttackProbabilities(4, 6, 4, [{ id: 'breaching', value: 2 }]); // every wound breaches
+    const outcome = resolveFinalOutcomeProbabilities(buckets, 6, 3, 7, 7);
+    expect(outcome.saveNormal.armourUsable).toBe(true);  // real AP6 > armour3: armour normally applies
+    expect(outcome.saveBreach.armourUsable).toBe(false); // breach's fixed AP2 does not exceed armour3
+  });
+
+  it('with no Breaching active, every wound uses the normal save only', () => {
+    const { buckets } = resolveAttackProbabilities(4, 4, 4, []);
+    const outcome = resolveFinalOutcomeProbabilities(buckets, 1, 4, 7, 7);
+    const totalBreachBucketMass = buckets.BreachDplus0 + buckets.BreachDplus1 + buckets.BreachDplus2;
+    expect(totalBreachBucketMass).toBeCloseTo(0, 9);
+  });
+});
+
 describe('binomialPMF', () => {
   it('sums to 1', () => {
     const dist = binomialPMF(20, 0.37);
@@ -104,9 +152,6 @@ describe('binomialPMF', () => {
 
 describe('propagate', () => {
   it('propagating a binomial through a second probability equals a combined binomial', () => {
-    // Two independent binomial stages (n, p1) then (·, p2) is mathematically
-    // equivalent to a single binomial(n, p1*p2) — this is the identity the
-    // whole hit -> wound -> save pipeline relies on.
     const n = 12, p1 = 4 / 6, p2 = 3 / 6;
     const stage1 = binomialPMF(n, p1);
     const combined = propagate(stage1, p2);
@@ -150,120 +195,6 @@ describe('cdfAtLeast', () => {
   });
 });
 
-describe('computeModelsRemoved', () => {
-  it('W=1,D=1: one unsaved wound kills one model, 1:1 mapping', () => {
-    const distUnsaved = [0, 0, 0, 1]; // all mass at k=3
-    const { distModels, hitsPerKill } = computeModelsRemoved(distUnsaved, 1, 1, 10);
-    expect(hitsPerKill).toBe(1);
-    expect(distModels[3]).toBeCloseTo(1, 9);
-  });
-  it('W=3,D=1: needs 3 unsaved wounds per kill, remainder does not kill', () => {
-    const distUnsaved = [0, 0, 0, 0, 0, 1]; // all mass at k=5
-    const { distModels, hitsPerKill } = computeModelsRemoved(distUnsaved, 3, 1, 10);
-    expect(hitsPerKill).toBe(3);
-    expect(distModels[1]).toBeCloseTo(1, 9); // floor(5/3) = 1 kill, remainder 2 wasted
-  });
-  it('W=3,D=2: overkill on last wound does not spill to next model', () => {
-    const distUnsaved = [0, 0, 1]; // exactly 2 unsaved wounds, ceil(3/2)=2 needed
-    const { distModels, hitsPerKill } = computeModelsRemoved(distUnsaved, 3, 2, 10);
-    expect(hitsPerKill).toBe(2);
-    expect(distModels[1]).toBeCloseTo(1, 9);
-  });
-  it('kills are capped at targetModels', () => {
-    const distUnsaved = new Array(51).fill(0);
-    distUnsaved[50] = 1; // 50 unsaved wounds, W=D=1 -> 50 kills, but only 5 models exist
-    const { distModels } = computeModelsRemoved(distUnsaved, 1, 1, 5);
-    expect(distModels[5]).toBeCloseTo(1, 9);
-    expect(distModels.length).toBe(6); // indices 0..5
-  });
-  it('models-removed distribution still sums to 1', () => {
-    const distUnsaved = binomialPMF(20, 0.35);
-    const { distModels } = computeModelsRemoved(distUnsaved, 2, 1, 10);
-    expect(distModels.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
-  });
-});
-
-describe('resolveHitAndWound — Rending + Poisoned combined', () => {
-  it('matches brute-force enumeration over all 36 (hit-die, wound-die) outcomes', () => {
-    const bs = 4, S = 3, T = 4, X = 5, Y = 5; // hitNeed=3, wNeed=5, rending 5+, poison 5+
-    const hitNeed = needForBS(bs);
-    const wNeed = needForWound(S, T);
-
-    let wins = 0;
-    for (let hitDie = 1; hitDie <= 6; hitDie++) {
-      if (hitDie < hitNeed && hitDie < X) continue; // miss (not saved by rending either)
-      if (hitDie >= X) { wins += 6; continue; } // rending: auto-wound, all 6 wound-die outcomes count
-      // normal hit: roll a wound die
-      for (let woundDie = 1; woundDie <= 6; woundDie++) {
-        if (woundDie >= wNeed || woundDie >= Y) wins += 1;
-      }
-    }
-    const expected = wins / 36;
-
-    const r = resolveHitAndWound(bs, S, T, [
-      { id: 'rending', value: X },
-      { id: 'poisoned', value: Y },
-    ]);
-    // r.pWound is conditional on a hit; multiply by pHit to get the unconditional "wins" probability
-    expect(r.pHit * r.pWound).toBeCloseTo(expected, 9);
-  });
-
-  it('Rending guarantees the wound even when Poisoned is a worse threshold', () => {
-    // Rending 4+, Poisoned only 6+ (worse than rending's guarantee)
-    const r = resolveHitAndWound(4, 1, 20, [
-      { id: 'rending', value: 4 },
-      { id: 'poisoned', value: 6 },
-    ]);
-    // Normal wound chance is 0 here (S far below T), but rending covers d=4,5,6, poison only helps d=3 (normal hit zone)
-    // hitNeed=3, so effHitNeed = min(3,4) = 3. pHit = 4/6.
-    // Rending portion: d>=4 -> 3/6. Normal portion: d=3 only -> 1/6.
-    // Normal-hit wound chance: max(0, poisonP=1/6) = 1/6.
-    const expected = (3 * 1 + 1 * (1 / 6)) / 4; // = (3 + 1/6)/4
-    expect(r.pWound).toBeCloseTo(expected, 9);
-  });
-
-  it('Poisoned helps only the non-rending slice, not the whole blend', () => {
-    // This is the case that distinguishes exact math from the old sequential/max approach.
-    const r = resolveHitAndWound(4, 4, 4, [
-      { id: 'rending', value: 6 },   // only a natural 6 rends
-      { id: 'poisoned', value: 2 },  // poison is very strong: 2+
-    ]);
-    const hitNeed = 3; // BS4
-    const wNeed = 4;   // S4 vs T4
-    const pHit = (7 - hitNeed) / 6;
-    const pRend = (7 - 6) / 6;             // 1/6
-    const pNormal = pHit - pRend;          // 3/6
-    const pNormalWound = Math.max((7 - wNeed) / 6, (7 - 2) / 6); // max(0.5, 5/6) = 5/6
-    const expected = (pRend * 1 + pNormal * pNormalWound) / pHit;
-    expect(r.pWound).toBeCloseTo(expected, 9);
-
-    // Sanity: this should NOT equal the old (wrong) sequential approach,
-    // which would have been max(blended-without-poison, poisonP).
-    const blendedWithoutPoison = (pRend * 1 + pNormal * ((7 - wNeed) / 6)) / pHit;
-    const oldWrongAnswer = Math.max(blendedWithoutPoison, (7 - 2) / 6);
-    expect(r.pWound).not.toBeCloseTo(oldWrongAnswer, 9);
-  });
-
-  it('reduces to Rending-only when no Poisoned rule is present', () => {
-    const withRendingOnly = resolveHitAndWound(4, 4, 4, [{ id: 'rending', value: 5 }]);
-    const combined = resolveHitAndWound(4, 4, 4, [{ id: 'rending', value: 5 }]);
-    expect(combined.pWound).toBeCloseTo(withRendingOnly.pWound, 9);
-  });
-
-  it('reduces to Poisoned-only when no Rending rule is present', () => {
-    const withPoisonOnly = resolveHitAndWound(4, 4, 4, [{ id: 'poisoned', value: 3 }]);
-    expect(withPoisonOnly.pWound).toBeCloseTo(Math.max((7 - needForWound(4, 4)) / 6, (7 - 3) / 6), 9);
-  });
-
-  it('BS10 with Rending present: auto-wound regardless of Poisoned value', () => {
-    const r = resolveHitAndWound(10, 1, 20, [
-      { id: 'rending', value: 6 },
-      { id: 'poisoned', value: 6 }, // weak poison, shouldn't matter — rending already guarantees it
-    ]);
-    expect(r.pWound).toBe(1);
-  });
-});
-
 describe('applyWoundGroupToState', () => {
   it('partial damage, not enough to kill', () => {
     expect(applyWoundGroupToState({ killed: 0, wounded_model: 5 }, 2, 1, 5, 10)).toEqual({ killed: 0, wounded_model: 3 });
@@ -286,6 +217,39 @@ describe('applyWoundGroupToState', () => {
   });
 });
 
+describe('computeModelsRemoved', () => {
+  it('W=1,D=1: one unsaved wound kills one model, 1:1 mapping', () => {
+    const distUnsaved = [0, 0, 0, 1];
+    const { distModels, hitsPerKill } = computeModelsRemoved(distUnsaved, 1, 1, 10);
+    expect(hitsPerKill).toBe(1);
+    expect(distModels[3]).toBeCloseTo(1, 9);
+  });
+  it('W=3,D=1: needs 3 unsaved wounds per kill, remainder does not kill', () => {
+    const distUnsaved = [0, 0, 0, 0, 0, 1];
+    const { distModels, hitsPerKill } = computeModelsRemoved(distUnsaved, 3, 1, 10);
+    expect(hitsPerKill).toBe(3);
+    expect(distModels[1]).toBeCloseTo(1, 9);
+  });
+  it('W=3,D=2: overkill on last wound does not spill to next model', () => {
+    const distUnsaved = [0, 0, 1];
+    const { distModels, hitsPerKill } = computeModelsRemoved(distUnsaved, 3, 2, 10);
+    expect(hitsPerKill).toBe(2);
+    expect(distModels[1]).toBeCloseTo(1, 9);
+  });
+  it('kills are capped at targetModels', () => {
+    const distUnsaved = new Array(51).fill(0);
+    distUnsaved[50] = 1;
+    const { distModels } = computeModelsRemoved(distUnsaved, 1, 1, 5);
+    expect(distModels[5]).toBeCloseTo(1, 9);
+    expect(distModels.length).toBe(6);
+  });
+  it('models-removed distribution still sums to 1', () => {
+    const distUnsaved = binomialPMF(20, 0.35);
+    const { distModels } = computeModelsRemoved(distUnsaved, 2, 1, 10);
+    expect(distModels.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
+  });
+});
+
 function bruteForceJointTrinomial(n, p1, p2) {
   let dist = [[1]];
   const p3 = 1 - p1 - p2;
@@ -303,8 +267,8 @@ function bruteForceJointTrinomial(n, p1, p2) {
   return dist;
 }
 
-describe('computeModelsRemovedWithFireGroups', () => {
-  it('reduces to the constant-damage formula when Shred probability is 0', () => {
+describe('computeModelsRemovedWithFireGroups (retained as a cross-check oracle for computeModelsRemovedMultiTier)', () => {
+  it('reduces to the constant-damage formula when the second Fire Group probability is 0', () => {
     const totalDice = 12, pUnsaved = 0.4, D = 2, W = 5, targetModels = 6;
     const { distModels } = computeModelsRemovedWithFireGroups(totalDice, pUnsaved, 0, D, W, targetModels);
     const { distModels: oldDist } = computeModelsRemoved(binomialPMF(totalDice, pUnsaved), W, D, targetModels);
@@ -336,40 +300,6 @@ describe('computeModelsRemovedWithFireGroups', () => {
   });
 });
 
-describe('resolveAttackProbabilities — Shred', () => {
-  it('a Rending-forced wound always triggers Shred, regardless of X', () => {
-    const { buckets } = resolveAttackProbabilities(4, 1, 20, [
-      { id: 'rending', value: 4 },
-      { id: 'shred', value: 6 },
-    ]);
-    const totalWound = buckets.BreachDplus0 + buckets.BreachDplus1 + buckets.BreachDplus2
-      + buckets.noBreachDplus0 + buckets.noBreachDplus1 + buckets.noBreachDplus2;
-    const totalShred = buckets.BreachDplus1 + buckets.noBreachDplus1
-      + buckets.BreachDplus2 + buckets.noBreachDplus2;
-    expect(totalShred).toBeCloseTo(totalWound, 9);
-  });
-
-  it('Poisoned success does not automatically shred (needs the real roll to also clear X)', () => {
-    const { buckets } = resolveAttackProbabilities(4, 1, 20, [
-      { id: 'poisoned', value: 2 },
-      { id: 'shred', value: 6 },
-    ]);
-    const totalWound = buckets.BreachDplus0 + buckets.BreachDplus1 + buckets.BreachDplus2
-      + buckets.noBreachDplus0 + buckets.noBreachDplus1 + buckets.noBreachDplus2;
-    const totalShred = buckets.BreachDplus1 + buckets.noBreachDplus1
-      + buckets.BreachDplus2 + buckets.noBreachDplus2;
-    expect(totalWound).toBeGreaterThan(totalShred);
-  });
-
-  it('Breach and Shred can occur independently on the same wound', () => {
-    const { buckets } = resolveAttackProbabilities(4, 6, 4, [
-      { id: 'breaching', value: 3 },
-      { id: 'shred', value: 3 },
-    ]);
-    expect(buckets.BreachDplus1).toBeGreaterThan(0);
-  });
-});
-
 describe('computeModelsRemovedMultiTier', () => {
   it('matches computeModelsRemovedWithFireGroups when only 2 tiers are active', () => {
     const totalDice = 15, W = 4, targetModels = 5;
@@ -388,20 +318,18 @@ describe('computeModelsRemovedMultiTier', () => {
 
   it('matches brute-force enumeration for a genuine 3-tier case', () => {
     const totalDice = 5, W = 3, targetModels = 2;
-    const p0 = 0.25, p1 = 0.15, p2 = 0.1; // D, D+1, D+2
+    const p0 = 0.25, p1 = 0.15, p2 = 0.1;
     const D = 1;
-    const outcomes = ['none', 'BreachDplus0', 'BreachDplus1', 'BreachDplus2'];
-    const probOf = { none: 1 - p0 - p1 - p2, BreachDplus0: p0, BreachDplus1: p1, BreachDplus2: p2 };
-    const damageOf = { BreachDplus0: D, BreachDplus1: D + 1, BreachDplus2: D + 2 };
+    const outcomes = ['none', 'tier0', 'tier1', 'tier2'];
+    const probOf = { none: 1 - p0 - p1 - p2, tier0: p0, tier1: p1, tier2: p2 };
+    const damageOf = { tier0: D, tier1: D + 1, tier2: D + 2 };
 
-    // enumerate all totalDice^4-ish sequences directly (small n keeps this cheap)
     function enumerate(seq, i, acc) {
       if (i === totalDice) {
-        // apply Fire Groups in ascending-damage order, NOT roll order
-        const counts = { BreachDplus0: 0, BreachDplus1: 0, BreachDplus2: 0 };
+        const counts = { tier0: 0, tier1: 0, tier2: 0 };
         for (const o of seq) if (o !== 'none') counts[o]++;
         let state = { killed: 0, wounded_model: W };
-        for (const tierKey of ['BreachDplus0', 'BreachDplus1', 'BreachDplus2']) {
+        for (const tierKey of ['tier0', 'tier1', 'tier2']) {
           if (state.killed >= targetModels) break;
           state = applyWoundGroupToState(state, counts[tierKey], damageOf[tierKey], W, targetModels);
         }
@@ -430,157 +358,7 @@ describe('computeModelsRemovedMultiTier', () => {
     ], 6, 8);
     expect(distModels.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
   });
-});
 
-describe('resolveAttackProbabilities — Critical Hit', () => {
-  it('Critical alone (no Shred): all wounds land in tier 1, none in tier 2', () => {
-    const { buckets } = resolveAttackProbabilities(4, 4, 4, [{ id: 'criticalHit', value: 5 }]);
-    expect(buckets.BreachDplus2 + buckets.noBreachDplus2).toBeCloseTo(0, 9);
-  });
-
-  it('Critical + Shred together: a critical hit always lands in tier 2 (forced-6 wound satisfies shred too)', () => {
-    const { buckets } = resolveAttackProbabilities(4, 4, 4, [
-      { id: 'criticalHit', value: 6 },
-      { id: 'shred', value: 6 },
-    ]);
-    // Isolate the probability mass specifically from d=6 (the only critical roll here):
-    // it should show up entirely in tier 2, not tier 1 or tier 0.
-    expect(buckets.BreachDplus2 + buckets.noBreachDplus2).toBeGreaterThan(0);
-  });
-
-  it('BS10 + Critical alone: forced wound, tier 1 only', () => {
-    const { buckets, pHit } = resolveAttackProbabilities(10, 1, 20, [{ id: 'criticalHit', value: 6 }]);
-    expect(pHit).toBe(1);
-    expect(buckets.noBreachDplus1 + buckets.BreachDplus1).toBeCloseTo(1, 9); // wound is forced, no shred active, tier 1 exactly
-  });
-
-  it('BS10 + Critical + Shred: forced wound, tier 2 only', () => {
-    const { buckets } = resolveAttackProbabilities(10, 1, 20, [
-      { id: 'criticalHit', value: 6 },
-      { id: 'shred', value: 6 },
-    ]);
-    expect(buckets.noBreachDplus2 + buckets.BreachDplus2).toBeCloseTo(1, 9);
-  });
-
-  it('Rending and Critical Hit can both trigger on the same hit die (Critical still adds its own bonus)', () => {
-    const { buckets } = resolveAttackProbabilities(4, 1, 20, [
-      { id: 'rending', value: 4 },
-      { id: 'criticalHit', value: 5 }, // d=5,6 satisfy both rending(>=4) and critical(>=5)
-    ]);
-    // S far below T: only rending/critical-forced wounds occur at all.
-    // d=4 -> rending only (tier 0, no crit bonus); d=5,6 -> both (tier 1).
-    expect(buckets.noBreachDplus1 + buckets.BreachDplus1).toBeGreaterThan(0);
-    expect(buckets.noBreachDplus0 + buckets.BreachDplus0).toBeGreaterThan(0);
-  });
-});
-
-describe('resolveAttackProbabilities — Critical Hit auto-hit threshold bug fix', () => {
-  it('Critical Hit alone, threshold BELOW the BS hit-need, still auto-hits (the bug this fixes)', () => {
-    // BS4 needs 3+ normally. Critical Hit(2) should pull the effective hit
-    // threshold down to 2+, same as Rending would on its own.
-    const { pHit } = resolveAttackProbabilities(4, 4, 4, [{ id: 'criticalHit', value: 2 }]);
-    expect(pHit).toBeCloseTo(5 / 6, 9); // 2+ instead of the normal 3+
-  });
-
-  it('matches Rending-alone behaviour when Critical Hit is used the same way (symmetry check)', () => {
-    const viaCritical = resolveAttackProbabilities(4, 4, 4, [{ id: 'criticalHit', value: 2 }]);
-    const viaRending = resolveAttackProbabilities(4, 4, 4, [{ id: 'rending', value: 2 }]);
-    expect(viaCritical.pHit).toBeCloseTo(viaRending.pHit, 9);
-  });
-
-  it('X < Y: three distinct hit populations (normal / rending-only / critical)', () => {
-    // BS3 (needs 4+), Rending(5), Critical(6): normal=[4], rending-only=[5], critical=[6]
-    const { buckets, pHit } = resolveAttackProbabilities(3, 4, 4, [
-      { id: 'rending', value: 5 },
-      { id: 'criticalHit', value: 6 },
-    ]);
-    expect(pHit).toBeCloseTo(3 / 6, 9); // needs 4+, unaffected since rending/crit are both >= hitNeed here
-    // tier-1 (critical) bucket should hold exactly the d=6 contribution
-    const TierDplus1Total = buckets.BreachDplus1 + buckets.noBreachDplus1;
-    expect(TierDplus1Total).toBeCloseTo(1 / 6, 9);
-  });
-
-  it('Y < X: Rending is fully subsumed by Critical Hit, no separate rending-only population', () => {
-    // S=1 vs T=20: normal wound chance is impossible, isolating ONLY the
-    // forced-wound contributions from Rending/Critical so the "no separate
-    // rending-only tier" property can actually be observed.
-    const { buckets, pHit } = resolveAttackProbabilities(3, 1, 20, [
-      { id: 'criticalHit', value: 5 },
-      { id: 'rending', value: 6 },
-    ]);
-    expect(pHit).toBeCloseTo(3 / 6, 9); // pHit depends only on bs + rule thresholds, unaffected by S/T
-    const TierDplus1Total = buckets.BreachDplus1 + buckets.noBreachDplus1;
-    const TierDplus0Total = buckets.BreachDplus0 + buckets.noBreachDplus0;
-    expect(TierDplus1Total).toBeCloseTo(2 / 6, 9); // d=5 and d=6 both land in tier 1
-    expect(TierDplus0Total).toBeCloseTo(0, 9); // no rending-only wounds exist separately
-  });
-});
-
-describe('getInnateCriticalX', () => {
-  it('BS <= 5 grants no innate critical', () => {
-    for (let bs = 1; bs <= 5; bs++) expect(getInnateCriticalX(bs)).toBeNull();
-  });
-  it('BS 6-10 grants innate critical at X = 12 - BS', () => {
-    expect(getInnateCriticalX(6)).toBe(6);
-    expect(getInnateCriticalX(7)).toBe(5);
-    expect(getInnateCriticalX(8)).toBe(4);
-    expect(getInnateCriticalX(9)).toBe(3);
-    expect(getInnateCriticalX(10)).toBe(2);
-  });
-});
-
-describe('getEffectiveCriticalThreshold', () => {
-  it('no innate, no explicit -> null', () => {
-    expect(getEffectiveCriticalThreshold(4, [])).toBeNull();
-  });
-  it('innate only (BS9) -> innate value used', () => {
-    expect(getEffectiveCriticalThreshold(9, [])).toBe(3);
-  });
-  it('explicit only (BS4) -> explicit value used', () => {
-    expect(getEffectiveCriticalThreshold(4, [{ id: 'criticalHit', value: 5 }])).toBe(5);
-  });
-  it('both present, explicit is better -> explicit wins', () => {
-    expect(getEffectiveCriticalThreshold(9, [{ id: 'criticalHit', value: 2 }])).toBe(2);
-  });
-  it('both present, innate is better -> innate wins', () => {
-    expect(getEffectiveCriticalThreshold(10, [{ id: 'criticalHit', value: 6 }])).toBe(2);
-  });
-});
-
-describe('resolveAttackProbabilities — innate Critical Hit from high BS', () => {
-  it('BS9 with no explicit rule still gets a Critical Hit tier', () => {
-    const { buckets, pHit } = resolveAttackProbabilities(9, 1, 20, []); // S/T isolates forced wounds only
-    expect(pHit).toBeCloseTo(5 / 6, 9);
-    const tier1 = buckets.BreachDplus1 + buckets.noBreachDplus1;
-    expect(tier1).toBeCloseTo(4 / 6, 9); // innate X=3: d=3,4,5,6 all critical
-  });
-
-  it('BS10 auto-hit is also automatically a Critical Hit via the innate rule', () => {
-    const { buckets, pHit } = resolveAttackProbabilities(10, 1, 20, []);
-    expect(pHit).toBe(1);
-    const tier1 = buckets.BreachDplus1 + buckets.noBreachDplus1;
-    expect(tier1).toBeCloseTo(1, 9);
-  });
-
-  it('a better explicit Critical Hit rule is used instead of a worse innate one', () => {
-    const { buckets } = resolveAttackProbabilities(9, 1, 20, [{ id: 'criticalHit', value: 2 }]);
-    const tier1 = buckets.BreachDplus1 + buckets.noBreachDplus1;
-    expect(tier1).toBeCloseTo(5 / 6, 9); // X=2: d=2..6 all critical
-  });
-
-  it('a worse explicit rule does not override a better innate one', () => {
-    const { buckets } = resolveAttackProbabilities(10, 1, 20, [{ id: 'criticalHit', value: 6 }]);
-    const tier1 = buckets.BreachDplus1 + buckets.noBreachDplus1;
-    expect(tier1).toBeCloseTo(1, 9); // still fully critical via innate X=2
-  });
-
-  it('BS <= 5 is unaffected: behaves exactly as before this change', () => {
-    const { pHit } = resolveAttackProbabilities(4, 1, 20, [{ id: 'criticalHit', value: 4 }]);
-    expect(pHit).toBeCloseTo(4 / 6, 9);
-  });
-});
-
-describe('computeModelsRemovedMultiTier — branches', () => {
   it('branches sum to the same distModels as before', () => {
     const { distModels, branches } = computeModelsRemovedMultiTier(10, [{ damage: 2, pUnsaved: 0.3 }], 5, 4);
     const fromBranches = new Array(5).fill(0);
@@ -653,19 +431,16 @@ describe('applyDeflagrateWave', () => {
 
 describe('applyDeflagrateWave — AP sentinel correctness', () => {
   it('AP "-" (represented as 7) never negates armour, regardless of armour value', () => {
-    // A save of armour=2 (the toughest possible) should still fully apply.
     const { branches } = computeModelsRemovedMultiTier(3, [{ damage: 1, pUnsaved: 1.0 }], 3, 2);
     const { pUnsavedDeflagrate } = applyDeflagrateWave(branches, 4, 4, 2, 7, 7, 3, 2, 3);
-    const pWound = (7 - needForWound(4, 4)) / 6; // 0.5
-    const pSaveExpected = (7 - 2) / 6; // armour 2+ fully applies
+    const pWound = (7 - needForWound(4, 4)) / 6;
+    const pSaveExpected = (7 - 2) / 6;
     expect(pUnsavedDeflagrate).toBeCloseTo(pWound * (1 - pSaveExpected), 9);
   });
 
   it('regression guard: AP=0 would have incorrectly negated armour entirely (this is the bug that was caught)', () => {
     const { branches } = computeModelsRemovedMultiTier(3, [{ damage: 1, pUnsaved: 1.0 }], 3, 2);
     const { pUnsavedDeflagrate } = applyDeflagrateWave(branches, 4, 4, 4, 7, 7, 3, 2, 3);
-    // If this ever regresses to using AP=0 internally, pUnsavedDeflagrate would come back as
-    // 0.5 (armour fully negated) instead of the correct 0.25 (armour 4+ applying).
     expect(pUnsavedDeflagrate).toBeCloseTo(0.25, 9);
     expect(pUnsavedDeflagrate).not.toBeCloseTo(0.5, 9);
   });
@@ -675,7 +450,6 @@ describe('applyDeflagrateWave — wound/unsaved distributions for charting', () 
   it('matches hand-derived binomial distributions for a deterministic single-branch case', () => {
     const { branches } = computeModelsRemovedMultiTier(3, [{ damage: 1, pUnsaved: 1.0 }], 3, 2);
     const { distWoundsCaused, distUnsaved } = applyDeflagrateWave(branches, 4, 4, 4, 7, 7, 3, 2, 3);
-    // N=3 fixed, pWoundDeflagrate=0.5, pUnsavedDeflagrate=0.25
     const expectedWounds = [1, 3, 3, 1].map((x) => x / 8);
     const expectedUnsaved = [0, 1, 2, 3].map((k) => [1, 3, 3, 1][k] * Math.pow(0.25, k) * Math.pow(0.75, 3 - k));
     for (let k = 0; k <= 3; k++) {
@@ -687,106 +461,8 @@ describe('applyDeflagrateWave — wound/unsaved distributions for charting', () 
   it('a branch where the unit is already wiped contributes nothing to the wound distributions', () => {
     const { branches } = computeModelsRemovedMultiTier(20, [{ damage: 1, pUnsaved: 0.95 }], 1, 2);
     const { distWoundsCaused, distUnsaved, distModels } = applyDeflagrateWave(branches, 6, 1, 7, 7, 7, 1, 2, 20);
-    expect(distModels[2]).toBeGreaterThan(0.5); // unit frequently wiped already
-    expect(distWoundsCaused.reduce((a, b) => a + b, 0)).toBeLessThan(1); // wiped branches excluded
+    expect(distModels[2]).toBeGreaterThan(0.5);
+    expect(distWoundsCaused.reduce((a, b) => a + b, 0)).toBeLessThan(1);
     expect(distUnsaved.reduce((a, b) => a + b, 0)).toBeLessThan(1);
-  });
-});
-
-describe('resolveAttackProbabilities — Murderous bucket tracking', () => {
-  it('Murderous buckets are a subset of their base bucket (never exceed it)', () => {
-    const { buckets } = resolveAttackProbabilities(4, 4, 4, [
-      { id: 'breaching', value: 3 }, { id: 'murderous', value: 5 },
-    ]);
-    expect(buckets.BreachDplus0Murderous).toBeLessThanOrEqual(buckets.BreachDplus0 + 1e-9);
-    expect(buckets.noBreachDplus0Murderous).toBeLessThanOrEqual(buckets.noBreachDplus0 + 1e-9);
-  });
-
-  it('a Rending/Critical-forced wound is always Murderous, regardless of X', () => {
-    const { buckets } = resolveAttackProbabilities(4, 1, 20, [
-      { id: 'rending', value: 4 }, { id: 'murderous', value: 6 },
-    ]);
-    const total = buckets.BreachDplus0 + buckets.noBreachDplus0;
-    const totalMurderous = buckets.BreachDplus0Murderous + buckets.noBreachDplus0Murderous;
-    expect(totalMurderous).toBeCloseTo(total, 9);
-  });
-
-  it('with no Murderous rule active, all Murderous buckets are 0 (backward compatible)', () => {
-    const { buckets } = resolveAttackProbabilities(4, 4, 4, [{ id: 'breaching', value: 3 }]);
-    expect(buckets.BreachDplus0Murderous).toBe(0);
-    expect(buckets.noBreachDplus0Murderous).toBe(0);
-  });
-});
-
-describe('resolveFinalOutcomeProbabilities — Murderous split', () => {
-  it('matches an independent hand-derived breach/murderous cross-tabulation', () => {
-    const bs = 4, S = 4, T = 4, ap = 1, armour = 4, invuln = 7, cover = 7;
-    const { buckets } = resolveAttackProbabilities(bs, S, T, [
-      { id: 'breaching', value: 3 }, { id: 'murderous', value: 5 },
-    ]);
-    const outcome = resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
-
-    const hitNeed = needForBS(bs), wNeed = needForWound(S, T);
-    let handNonMurd = 0, handMurd = 0;
-    for (let hd = 1; hd <= 6; hd++) {
-      if (hd < hitNeed) continue;
-      for (let wd = 1; wd <= 6; wd++) {
-        if (wd < wNeed) continue;
-        const breach = wd >= 3, murderous = wd >= 5;
-        const save = breach ? resolveSave(2, armour, invuln, cover) : resolveSave(ap, armour, invuln, cover);
-        const p = (1 / 6) * (1 / 6) * save.pUnsaved;
-        if (murderous) handMurd += p; else handNonMurd += p;
-      }
-    }
-    const pUnsavedD_nonMurd = outcome.pUnsavedTierDplus0 - outcome.pUnsavedTierDplus0Murderous;
-    expect(pUnsavedD_nonMurd).toBeCloseTo(handNonMurd, 9);
-    expect(outcome.pUnsavedTierDplus0Murderous).toBeCloseTo(handMurd, 9);
-  });
-
-  it('Murderous subset never exceeds its parent tier', () => {
-    const { buckets } = resolveAttackProbabilities(4, 4, 4, [{ id: 'murderous', value: 3 }]);
-    const outcome = resolveFinalOutcomeProbabilities(buckets, 1, 4, 7, 7);
-    expect(outcome.pUnsavedTierDplus0Murderous).toBeLessThanOrEqual(outcome.pUnsavedTierDplus0 + 1e-9);
-  });
-});
-
-describe('computeModelsRemovedMultiTier — Murderous + Eternal Warrior full pipeline', () => {
-  it('matches brute-force enumeration for a small case', () => {
-    const bs = 4, S = 4, T = 4, ap = 1, D = 2, armour = 4, invuln = 7, cover = 7;
-    const totalDice = 4, W = 5, targetModels = 2;
-    const activeTargetRules = [{ id: 'eternalWarrior', value: 1 }];
-
-    const { buckets } = resolveAttackProbabilities(bs, S, T, [
-      { id: 'breaching', value: 3 }, { id: 'murderous', value: 5 },
-    ]);
-    const outcome = resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
-    const pUnsavedD_nonMurd = outcome.pUnsavedTierDplus0 - outcome.pUnsavedTierDplus0Murderous;
-
-    const tiers = [
-      { damage: applyEternalWarrior(D, activeTargetRules), pUnsaved: pUnsavedD_nonMurd },
-      { damage: D, pUnsaved: outcome.pUnsavedTierDplus0Murderous },
-    ];
-    const { distModels } = computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels);
-
-    // brute-force: each die independently misses, unsaved-normal (EW applies), or unsaved-murderous (EW blocked)
-    const effD = applyEternalWarrior(D, activeTargetRules);
-    const pMiss = 1 - pUnsavedD_nonMurd - outcome.pUnsavedTierDplus0Murderous;
-    const expected = {};
-    const add = (k, p) => { expected[k] = (expected[k] || 0) + p; };
-    const outcomes = ['miss', 'normal', 'murd'];
-    for (const a of outcomes) for (const b of outcomes) for (const c of outcomes) for (const d of outcomes) {
-      const seq = [a, b, c, d];
-      const p = seq.reduce((acc, x) => acc * (x === 'miss' ? pMiss : x === 'normal' ? pUnsavedD_nonMurd : outcome.pUnsavedTierDplus0Murderous), 1);
-      const nNormal = seq.filter((x) => x === 'normal').length;
-      const nMurd = seq.filter((x) => x === 'murd').length;
-      let state = { killed: 0, wounded_model: W };
-      const groups = effD <= D ? [[effD, nNormal], [D, nMurd]] : [[D, nMurd], [effD, nNormal]];
-      for (const [dmgVal, count] of groups) {
-        if (state.killed >= targetModels) break;
-        state = applyWoundGroupToState(state, count, dmgVal, W, targetModels);
-      }
-      add(state.killed, p);
-    }
-    for (let k = 0; k <= targetModels; k++) expect(distModels[k]).toBeCloseTo(expected[k] || 0, 9);
   });
 });

@@ -8,6 +8,21 @@ import {
   DAMAGE_MITIGATION_DEFINITIONS,
 } from './damageMitigation.js';
 
+describe('DAMAGE_MITIGATION_DEFINITIONS — structural sanity', () => {
+  it('every rule id is unique', () => {
+    const ids = DAMAGE_MITIGATION_DEFINITIONS.map((d) => d.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('every definition has options + a defaultValue that is one of those options', () => {
+    for (const def of DAMAGE_MITIGATION_DEFINITIONS) {
+      expect(Array.isArray(def.options)).toBe(true);
+      expect(def.options.length).toBeGreaterThan(0);
+      expect(def.options).toContain(def.defaultValue);
+    }
+  });
+});
+
 describe('resolveDamageMitigation', () => {
   it('no active rules -> no mitigation, pMitigationFail = 1 (unchanged behaviour)', () => {
     const m = resolveDamageMitigation([]);
@@ -21,7 +36,7 @@ describe('resolveDamageMitigation', () => {
     expect(m.pMitigationFail).toBeCloseTo(0.5, 9);
   });
   it('multiple rules -> best (lowest X) wins', () => {
-    const m = resolveDamageMitigation([{ id: 'shrouded', value: 5 }, { id: 'otherRule', value: 3 }]);
+    const m = resolveDamageMitigation([{ id: 'shrouded', value: 5 }, { id: 'feel_no_pain', value: 3 }]);
     expect(m.mitigationValue).toBe(3);
   });
   it('pMitigate and pMitigationFail are always complementary', () => {

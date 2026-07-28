@@ -139,14 +139,17 @@ function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }
       {activeRules.map((rule) => {
         const def = definitions.find((d) => d.id === rule.id);
         if (!def) return null;
+        const hasOptions = Array.isArray(def.options) && def.options.length > 0;
         return (
           <div className="rule-row" key={rule.id}>
             <span className="rule-name">{def.label}</span>
-            <select value={rule.value} onChange={(e) => onUpdate(rule.id, Number(e.target.value), definitions)}>
-              {def.options.map((v) => (
-                <option key={v} value={v}>{v}{def.optionSuffix ?? '+'}</option>
-              ))}
-            </select>
+            {hasOptions ? (
+              <select value={rule.value} onChange={(e) => onUpdate(rule.id, Number(e.target.value), definitions)}>
+                {def.options.map((v) => (
+                  <option key={v} value={v}>{v}{def.optionSuffix ?? '+'}</option>
+                ))}
+              </select>
+            ): null}
             <button type="button" className="rule-remove" onClick={() => onRemove(rule.id, definitions)} aria-label={`Remove ${def.label}`}>×</button>
           </div>
         );
@@ -188,14 +191,15 @@ export default function App() {
   function addRule(id, definitions) {
     const def = definitions.find((d) => d.id === id);
     if (!def) return;
-    else if (definitions==OFFENSIVE_SPECIAL_RULE_DEFINITIONS){
-      setActiveOffensiveRules((prev) => [...prev, { id, value: def.defaultValue }]);
-    }
-    else if (definitions==DEFENSIVE_SPECIAL_RULE_DEFINITIONS){
-      setActiveDefensiveRules((prev) => [...prev, { id, value: def.defaultValue }]);
-    }
-    else if (definitions==DAMAGE_MITIGATION_DEFINITIONS){
-      setActiveMitigationRules((prev) => [...prev, { id, value: def.defaultValue }]);
+    const hasOptions = Array.isArray(def.options) && def.options.length > 0;
+    const value = hasOptions ? def.defaultValue : def.fixedValue;
+
+    if (definitions === OFFENSIVE_SPECIAL_RULE_DEFINITIONS) {
+      setActiveOffensiveRules((prev) => [...prev, { id, value }]);
+    } else if (definitions === DEFENSIVE_SPECIAL_RULE_DEFINITIONS) {
+      setActiveDefensiveRules((prev) => [...prev, { id, value }]);
+    } else if (definitions === DAMAGE_MITIGATION_DEFINITIONS) {
+      setActiveMitigationRules((prev) => [...prev, { id, value }]);
     }
   }
 
@@ -240,14 +244,14 @@ export default function App() {
   const [tough, setTough] = useState(4);
   const [woundsPerModel, setWoundsPerModel] = useState(1);
   const [modelsTarget, setModelsTarget] = useState(10);
-  const [armour, setArmour] = useState(4);
+  const [armour, setArmour] = useState(3);
   const [invuln, setInvuln] = useState(7);
   const [cover, setCover] = useState(7);
 
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
     const { pHit, pWound, hitNeed, wNeed, buckets } =
-      resolveAttackProbabilities(bs, str, tough, activeOffensiveRules);
+      resolveAttackProbabilities(bs, str, tough, activeOffensiveRules, activeDefensiveRules);
 
     const critNeed = getEffectiveCriticalThreshold(bs, activeOffensiveRules);
     const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2,
@@ -440,7 +444,7 @@ export default function App() {
                   onRemove={removeRule}
                 />
               <div className="hint">{mitigationHint}</div>
-              <div className="divider-label">Target Special Rules</div>
+              <div className="divider-label">Special Rules</div>
                 <SpecialRuleList
                   activeRules={activeDefensiveRules}
                   definitions={DEFENSIVE_SPECIAL_RULE_DEFINITIONS}
