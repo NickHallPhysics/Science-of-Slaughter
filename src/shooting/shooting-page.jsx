@@ -1,4 +1,7 @@
+'use client';
+
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Chart,
   BarController,
@@ -19,14 +22,14 @@ import {
   propagate,
   mean,
   cdfAtLeast,
-} from './lib/combatMath.js';
+} from '../lib/combatMath.js';
 import {
   OFFENSIVE_SPECIAL_RULE_DEFINITIONS,
   DEFENSIVE_SPECIAL_RULE_DEFINITIONS,
-} from './lib/specialRules.js';
+} from '../lib/specialRules.js';
 import { 
   DAMAGE_MITIGATION_DEFINITIONS 
-} from './lib/damageMitigation.js';
+} from '../lib/damageMitigation.js';
 
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip);
 
@@ -139,17 +142,14 @@ function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }
       {activeRules.map((rule) => {
         const def = definitions.find((d) => d.id === rule.id);
         if (!def) return null;
-        const hasOptions = Array.isArray(def.options) && def.options.length > 0;
         return (
           <div className="rule-row" key={rule.id}>
             <span className="rule-name">{def.label}</span>
-            {hasOptions ? (
-              <select value={rule.value} onChange={(e) => onUpdate(rule.id, Number(e.target.value), definitions)}>
-                {def.options.map((v) => (
-                  <option key={v} value={v}>{v}{def.optionSuffix ?? '+'}</option>
-                ))}
-              </select>
-            ): null}
+            <select value={rule.value} onChange={(e) => onUpdate(rule.id, Number(e.target.value), definitions)}>
+              {def.options.map((v) => (
+                <option key={v} value={v}>{v}{def.optionSuffix ?? '+'}</option>
+              ))}
+            </select>
             <button type="button" className="rule-remove" onClick={() => onRemove(rule.id, definitions)} aria-label={`Remove ${def.label}`}>×</button>
           </div>
         );
@@ -166,7 +166,7 @@ function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }
   );
 }
 
-export default function App() {
+export default function Page() {
   // firing unit
   const [bs, setBs] = useState(4);
   const [fp, setFp] = useState(1);
@@ -191,15 +191,14 @@ export default function App() {
   function addRule(id, definitions) {
     const def = definitions.find((d) => d.id === id);
     if (!def) return;
-    const hasOptions = Array.isArray(def.options) && def.options.length > 0;
-    const value = hasOptions ? def.defaultValue : def.fixedValue;
-
-    if (definitions === OFFENSIVE_SPECIAL_RULE_DEFINITIONS) {
-      setActiveOffensiveRules((prev) => [...prev, { id, value }]);
-    } else if (definitions === DEFENSIVE_SPECIAL_RULE_DEFINITIONS) {
-      setActiveDefensiveRules((prev) => [...prev, { id, value }]);
-    } else if (definitions === DAMAGE_MITIGATION_DEFINITIONS) {
-      setActiveMitigationRules((prev) => [...prev, { id, value }]);
+    else if (definitions==OFFENSIVE_SPECIAL_RULE_DEFINITIONS){
+      setActiveOffensiveRules((prev) => [...prev, { id, value: def.defaultValue }]);
+    }
+    else if (definitions==DEFENSIVE_SPECIAL_RULE_DEFINITIONS){
+      setActiveDefensiveRules((prev) => [...prev, { id, value: def.defaultValue }]);
+    }
+    else if (definitions==DAMAGE_MITIGATION_DEFINITIONS){
+      setActiveMitigationRules((prev) => [...prev, { id, value: def.defaultValue }]);
     }
   }
 
@@ -244,20 +243,18 @@ export default function App() {
   const [tough, setTough] = useState(4);
   const [woundsPerModel, setWoundsPerModel] = useState(1);
   const [modelsTarget, setModelsTarget] = useState(10);
-  const [armour, setArmour] = useState(3);
+  const [armour, setArmour] = useState(4);
   const [invuln, setInvuln] = useState(7);
   const [cover, setCover] = useState(7);
 
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
     const { pHit, pWound, hitNeed, wNeed, buckets } =
-      resolveAttackProbabilities(bs, str, tough, activeOffensiveRules, activeDefensiveRules);
+      resolveAttackProbabilities(bs, str, tough, activeOffensiveRules);
 
     const critNeed = getEffectiveCriticalThreshold(bs, activeOffensiveRules);
-    const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2,
-        pUnsavedTierDplus0Murderous, pUnsavedTierDplus1Murderous, pUnsavedTierDplus2Murderous,
-        saveNormal, saveBreach } = resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
-    
+    const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, saveNormal, saveBreach } =
+      resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
 
     const totalDice = fp * modelsFiring;
     const distHits = binomialPMF(totalDice, pHit);
@@ -268,18 +265,11 @@ export default function App() {
 
     const mitigation = resolveDamageMitigation(activeMitigationRules);
 
-    const pUnsavedDplus0_nonMurd = pUnsavedTierDplus0 - pUnsavedTierDplus0Murderous;
-    const pUnsavedDplus1_nonMurd = pUnsavedTierDplus1 - pUnsavedTierDplus1Murderous;
-    const pUnsavedDplus2_nonMurd = pUnsavedTierDplus2 - pUnsavedTierDplus2Murderous;
-
     const tiers = [
-      { damage: applyEternalWarrior(dmg, activeDefensiveRules), pUnsaved: pUnsavedDplus0_nonMurd * mitigation.pMitigationFail },
-      { damage: dmg, pUnsaved: pUnsavedTierDplus0Murderous * mitigation.pMitigationFail }, // Murderous: EW blocked, raw damage
-      { damage: applyEternalWarrior(dmg + 1, activeDefensiveRules), pUnsaved: pUnsavedDplus1_nonMurd * mitigation.pMitigationFail },
-      { damage: dmg + 1, pUnsaved: pUnsavedTierDplus1Murderous * mitigation.pMitigationFail },
-      { damage: applyEternalWarrior(dmg + 2, activeDefensiveRules), pUnsaved: pUnsavedDplus2_nonMurd * mitigation.pMitigationFail },
-      { damage: dmg + 2, pUnsaved: pUnsavedTierDplus2Murderous * mitigation.pMitigationFail },
-    ];
+        { damage: applyEternalWarrior(dmg, activeDefensiveRules), pUnsaved: pUnsavedTierDplus0 * mitigation.pMitigationFail },
+        { damage: applyEternalWarrior(dmg + 1, activeDefensiveRules), pUnsaved: pUnsavedTierDplus1 * mitigation.pMitigationFail },
+        { damage: applyEternalWarrior(dmg + 2, activeDefensiveRules), pUnsaved: pUnsavedTierDplus2 * mitigation.pMitigationFail },
+      ];
 
     const deflagrateRule = activeOffensiveRules.find((r) => r.id === 'deflagrate');
 
@@ -330,6 +320,10 @@ export default function App() {
 
   return (
     <>
+      <Link to="/" className="landing-button landing-button-small back-home-button">
+        <span className="landing-button-label">&larr; Home</span>
+      </Link>
+
       <div className="masthead">
         <p className="eyebrow">Shooting Phase &middot; Infantry vs Infantry</p>
         <h1>Science of Slaughter</h1>
@@ -444,7 +438,7 @@ export default function App() {
                   onRemove={removeRule}
                 />
               <div className="hint">{mitigationHint}</div>
-              <div className="divider-label">Special Rules</div>
+              <div className="divider-label">Target Special Rules</div>
                 <SpecialRuleList
                   activeRules={activeDefensiveRules}
                   definitions={DEFENSIVE_SPECIAL_RULE_DEFINITIONS}

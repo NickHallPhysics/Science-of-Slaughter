@@ -19,6 +19,160 @@
   --serif:'EB Garamond', serif;
 }
 
+/* ============================================================
+   Landing page — append to globals.css. Reuses the existing
+   parchment theme's CSS custom properties (--brass, --olive,
+   --panel, --border, --text, fonts, etc.) so it matches the
+   shooting-phase page automatically. No new variables needed.
+   ============================================================ */
+
+.landing{
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:40px 24px;
+  text-align:center;
+}
+
+.landing-content{
+  max-width:640px;
+}
+
+.landing-eyebrow{
+  font-family:var(--mono);
+  font-size:12px;
+  letter-spacing:.28em;
+  text-transform:uppercase;
+  color:var(--brass);
+  margin:0 0 18px;
+}
+
+.landing-banner{
+  font-family:var(--disp);
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+  font-size:clamp(40px, 8vw, 76px);
+  line-height:1.05;
+  margin:0 0 22px;
+  color:var(--text);
+}
+
+.landing-subtitle{
+  font-family:var(--serif);
+  font-size:18px;
+  line-height:1.55;
+  color:var(--text-dim);
+  max-width:520px;
+  margin:0 auto 44px;
+}
+
+.landing-buttons{
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+  align-items:stretch;
+}
+
+.landing-button{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  padding:18px 24px;
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:3px;
+  text-decoration:none;
+  transition:background .15s, border-color .15s, transform .15s;
+  cursor:pointer;
+}
+
+.landing-button:hover{
+  background:var(--panel-2);
+  border-color:var(--brass);
+  transform:translateY(-1px);
+}
+
+.landing-button-label{
+  font-family:var(--disp);
+  font-weight:600;
+  font-size:19px;
+  letter-spacing:.03em;
+  text-transform:uppercase;
+  color:var(--text);
+}
+
+.landing-button-desc{
+  font-family:var(--serif);
+  font-size:14px;
+  color:var(--text-dim);
+}
+
+.landing-button-disabled{
+  cursor:not-allowed;
+  opacity:.5;
+}
+.landing-button-disabled:hover{
+  background:var(--panel);
+  border-color:var(--border);
+  transform:none;
+}
+.landing-button-disabled em{
+  font-style:normal;
+  font-family:var(--mono);
+  font-size:12px;
+  letter-spacing:.05em;
+  color:var(--text-faint);
+  text-transform:uppercase;
+}
+
+/* ============================================================
+   Back-to-home button — a compact variant of .landing-button,
+   fixed to the top-right corner of the shooting phase page.
+   ============================================================ */
+
+.back-home-button{
+  position:fixed;
+  top:16px;
+  right:16px;
+  z-index:100;
+}
+
+.landing-button-small{
+  padding:8px 14px;
+  gap:0;
+  display:inline-flex;
+  align-items:center;
+}
+
+.landing-button-small .landing-button-label{
+  font-size:13px;
+  letter-spacing:.02em;
+}
+
+.landing-button-small:hover{
+  transform:translateY(-1px);
+}
+
+@media (max-width: 700px){
+  .back-home-button{
+    top:8px;
+    right:8px;
+  }
+  .landing-button-small{
+    padding:6px 10px;
+  }
+  .landing-button-small .landing-button-label{
+    font-size:12px;
+  }
+}
+
+
+/* ============================================================
+   Shooting page.
+   ============================================================ */
+
 *{box-sizing:border-box;}
 html{scroll-behavior:smooth;}
 body{
@@ -210,14 +364,21 @@ footer{
 .rule-name{
   flex:1; font-family:var(--mono); font-size:12px; color:var(--text);
 }
-.rule-row select{ width:auto; padding:3px 6px; }
+.rule-row select{ width:auto; padding:3px 6px; background:var(--bg); border:1px solid var(--border); color:var(--text);
+  font-family:var(--mono); font-size:13px; padding:6px 8px; border-radius:2px;}
 .rule-remove{
   background:none; border:1px solid var(--border-dim); color:var(--danger);
   width:20px; height:20px; line-height:1; border-radius:2px; cursor:pointer;
   font-size:13px; padding:0;
 }
 .rule-remove:hover{ background:var(--danger); color:var(--panel); border-color:var(--danger); }
-.rule-add{ margin-top:4px; }
+.rule-add{ margin-top:4px; background:var(--bg); border:1px solid var(--border); color:var(--text);
+font-family:var(--mono); font-size:13px; padding:6px 8px; border-radius:2px;}
+
+/* .field select, .field input[type=number]{
+  width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text);
+  font-family:var(--mono); font-size:13px; padding:6px 8px; border-radius:2px;
+} */
 
 .mean-group{
   display:flex;
