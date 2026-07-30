@@ -220,6 +220,7 @@ function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }
 export default function Page() {
   // firing unit
   const [bs, bsInput] = useNumericField(4, { min: 1, max: 10 });
+  const [isSnapShot, setIsSnapShot] = useState(false);
   const [fp, fpInput] = useNumericField(1, { min: 1, max: 20 });
   const [modelsFiring, modelsFiringInput] = useNumericField(10, { min: 1, max: 100 });
   const [str, strInput] = useNumericField(4, { min: 1, max: 20 });
@@ -301,9 +302,8 @@ export default function Page() {
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
     const { pHit, pWound, hitNeed, wNeed, buckets } =
-      resolveAttackProbabilities(bs, str, tough, activeOffensiveRules);
+      resolveAttackProbabilities(bs, str, tough, activeOffensiveRules, activeDefensiveRules, isSnapShot);
 
-    const critNeed = getEffectiveCriticalThreshold(bs, activeOffensiveRules);
     const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, saveNormal, saveBreach } =
       resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
 
@@ -345,14 +345,14 @@ export default function Page() {
     return { hitNeed, pHit, wNeed, saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, 
       deflagrateUnsaved, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, mitigation };
     }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, 
-      activeOffensiveRules, activeMitigationRules, activeDefensiveRules]);
+      activeOffensiveRules, activeMitigationRules, activeDefensiveRules, isSnapShot]);
 
   const { saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, deflagrateUnsaved, hitNeed, totalDice, 
     distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill, mitigation } = results;
 
   const modelsChartDist = modelsView === 'cumulative' ? cdfModels : distModels;
 
-  const critNeed = getEffectiveCriticalThreshold(bs, activeOffensiveRules);
+  const critNeed = getEffectiveCriticalThreshold(bs, activeOffensiveRules, isSnapShot);
 
   let saveHint;
   if (saveNormal.saveValue === null) {
@@ -390,13 +390,28 @@ export default function Page() {
               <div className="subgrid">
                 <div className="field">
                   <label>Ballistic Skill (BS)</label>
-                  <input {...bsInput} />
+                  <div className="bs-input-row">
+                    <input {...bsInput} />
+                    <button
+                      type="button"
+                      className={`toggle-btn ${isSnapShot ? 'active' : ''}`}
+                      onClick={() => setIsSnapShot((v) => !v)}
+                    >
+                      Snap Shots
+                    </button>
+                  </div>
                   <div className="hint">
-                    {bs >= 10
-                      ? (critNeed !== null ? 'Automatic hit, automatic Critical Hit' : 'Automatic hit')
-                      : critNeed !== null
-                        ? `Needs ${hitNeed}+ to hit, needs ${critNeed}+ to Critical Hit`
-                        : `Needs ${hitNeed}+ to hit`}
+                    {isSnapShot
+                      ? (hitNeed > 6
+                          ? 'Automatic Fail (Snap Shot)'
+                          : critNeed !== null
+                            ? `Snap Shot: needs ${hitNeed}+ to hit, needs ${critNeed}+ to Critical Hit`
+                            : `Snap Shot: needs ${hitNeed}+ to hit`)
+                      : bs >= 10
+                        ? (critNeed !== null ? 'Automatic hit, automatic Critical Hit' : 'Automatic hit')
+                        : critNeed !== null
+                          ? `Needs ${hitNeed}+ to hit, needs ${critNeed}+ to Critical Hit`
+                          : `Needs ${hitNeed}+ to hit`}
                   </div>
                 </div>
               </div>

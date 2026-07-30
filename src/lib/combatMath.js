@@ -18,6 +18,24 @@ export function needForBS(bs) {
   return null; // BS 10 = automatic hit
 }
 
+/**
+ * D6 result needed to hit when firing a Snap Shot, given Ballistic Skill.
+ * Unlike needForBS, this NEVER returns null — even BS10+ requires an
+ * actual roll (2+) rather than being an automatic hit, and BS1 is
+ * represented as needing an impossible 7+ (Automatic Fail via the BS
+ * mechanism itself). Note this doesn't prevent a weapon's own Rending or
+ * Critical Hit thresholds from independently forcing a hit, same as they
+ * would for a normal shot — Snap Shot only changes what BS alone confers.
+ */
+export function needForBSSnapShot(bs) {
+  if (bs <= 1) return 7; // Automatic Fail
+  if (bs <= 3) return 6;
+  if (bs <= 5) return 5;
+  if (bs <= 7) return 4;
+  if (bs <= 9) return 3;
+  return 2; // BS10+
+}
+
 /** Convert a "needs N+" value into a probability. null means "always succeeds". */
 export function pFromNeed(need) {
   return need === null ? 1 : (7 - need) / 6;
@@ -134,11 +152,12 @@ export function getInnateCriticalX(bs) {
  * The effective Critical Hit(X) threshold for a weapon/unit: the better
  * (lower) of any explicit Critical Hit special rule and the innate
  * Critical Hit granted by high Ballistic Skill. Returns null if neither
- * applies.
+ * applies. Snap Shots never confer the innate BS-based Critical Hit —
+ * only an explicit Critical Hit(X) rule on the weapon still applies.
  */
-export function getEffectiveCriticalThreshold(bs, activeOffensiveRules = []) {
+export function getEffectiveCriticalThreshold(bs, activeOffensiveRules = [], isSnapShot = false) {
   const criticalRule = activeOffensiveRules.find((r) => r.id === 'criticalHit');
-  const innateX = getInnateCriticalX(bs);
+  const innateX = isSnapShot ? null : getInnateCriticalX(bs);
   const explicitX = criticalRule ? criticalRule.value : null;
   const candidates = [innateX, explicitX].filter((x) => x !== null);
   return candidates.length > 0 ? Math.min(...candidates) : null;
@@ -151,8 +170,8 @@ export function getEffectiveCriticalThreshold(bs, activeOffensiveRules = []) {
  * All bucket values are ABSOLUTE probabilities (already include pHit), not
  * conditional on a hit.
  */
-export function resolveAttackProbabilities(bs, S, T, activeOffensiveRules = [], activeDefensiveRules = []) {
-  const hitNeed = needForBS(bs);
+export function resolveAttackProbabilities(bs, S, T, activeOffensiveRules = [], activeDefensiveRules = [], isSnapShot = false) {
+  const hitNeed = isSnapShot ? needForBSSnapShot(bs) : needForBS(bs);
 
   const ironHandsRule = activeDefensiveRules.find((r) => r.id === 'ironHands');
   const effS = ironHandsRule ? Math.max(1, S-ironHandsRule.value) : S;
@@ -173,7 +192,7 @@ export function resolveAttackProbabilities(bs, S, T, activeOffensiveRules = [], 
   const Xbreach = breachingRule ? breachingRule.value : null;
   const Xshred = shredRule ? shredRule.value : null;
   const Xrend = rendingRule ? rendingRule.value : null;
-  const Xcrit = getEffectiveCriticalThreshold(bs, activeOffensiveRules);
+  const Xcrit = getEffectiveCriticalThreshold(bs, activeOffensiveRules, isSnapShot);
   const Xmurderous = murderousRule ? murderousRule.value : null;
 
   const TIER_SUFFIX = { 0: 'Dplus0', 1: 'Dplus1', 2: 'Dplus2' };
