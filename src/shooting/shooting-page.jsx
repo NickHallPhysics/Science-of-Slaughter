@@ -53,6 +53,57 @@ function fmtNum(x) {
   return x.toFixed(2);
 }
 
+/**
+ * A number input backed by its own raw string state, rather than binding
+ * directly to the numeric value. This is what allows the box to actually
+ * go blank while editing — bind value={numericState} directly and the
+ * field snaps back to a fallback on every keystroke (e.g. clearing the
+ * box immediately becomes "1"), which breaks deleting-then-retyping.
+ *
+ * While the box is blank (or holds something that isn't a valid number
+ * yet, like a lone "-"), the returned `value` stays at whatever the last
+ * genuinely valid number was — so charts don't jump to `min` mid-edit,
+ * they just hold steady until a new valid number is typed. Clamping to
+ * min/max still happens live once a valid number is entered, and the box's
+ * own displayed text is only corrected (clamped, or restored if left
+ * blank) once the field is blurred.
+ */
+function useNumericField(initialValue, { min = 1, max = Infinity } = {}) {
+  const clamp = (n) => Math.min(max, Math.max(min, n));
+  const [raw, setRaw] = useState(String(initialValue));
+  const [lastValid, setLastValid] = useState(clamp(initialValue));
+
+  const value = (() => {
+    if (raw === '') return lastValid;
+    const n = Number(raw);
+    return Number.isNaN(n) ? lastValid : clamp(n);
+  })();
+
+  const inputProps = {
+    type: 'number',
+    min,
+    max: max === Infinity ? undefined : max,
+    value: raw,
+    onChange: (e) => {
+      const v = e.target.value;
+      setRaw(v);
+      if (v !== '') {
+        const n = Number(v);
+        if (!Number.isNaN(n)) setLastValid(clamp(n));
+      }
+    },
+    onBlur: () => {
+      if (raw === '') { setRaw(String(lastValid)); return; }
+      const n = Number(raw);
+      if (Number.isNaN(n)) { setRaw(String(lastValid)); return; }
+      const clamped = clamp(n);
+      if (clamped !== n) setRaw(String(clamped));
+    },
+  };
+
+  return [value, inputProps];
+}
+
 function BarChart({ series, stacked = false, hidden = {}, onToggle }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
@@ -168,12 +219,12 @@ function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }
 
 export default function Page() {
   // firing unit
-  const [bs, setBs] = useState(4);
-  const [fp, setFp] = useState(1);
-  const [modelsFiring, setModelsFiring] = useState(10);
-  const [str, setStr] = useState(4);
+  const [bs, bsInput] = useNumericField(4, { min: 1, max: 10 });
+  const [fp, fpInput] = useNumericField(1, { min: 1, max: 20 });
+  const [modelsFiring, modelsFiringInput] = useNumericField(10, { min: 1, max: 100 });
+  const [str, strInput] = useNumericField(4, { min: 1, max: 20 });
   const [ap, setAp] = useState(5);
-  const [dmg, setDmg] = useState(1);
+  const [dmg, dmgInput] = useNumericField(1, { min: 1, max: 20 });
 
   // special rule handelling
   const [activeOffensiveRules, setActiveOffensiveRules] = useState([]); // [{ id, value }]
@@ -240,9 +291,9 @@ export default function Page() {
   }
   
   // target unit
-  const [tough, setTough] = useState(4);
-  const [woundsPerModel, setWoundsPerModel] = useState(1);
-  const [modelsTarget, setModelsTarget] = useState(10);
+  const [tough, toughInput] = useNumericField(4, { min: 1, max: 20 });
+  const [woundsPerModel, woundsPerModelInput] = useNumericField(1, { min: 1, max: 20 });
+  const [modelsTarget, modelsTargetInput] = useNumericField(10, { min: 1, max: 60 });
   const [armour, setArmour] = useState(4);
   const [invuln, setInvuln] = useState(7);
   const [cover, setCover] = useState(7);
@@ -339,7 +390,7 @@ export default function Page() {
               <div className="subgrid">
                 <div className="field">
                   <label>Ballistic Skill (BS)</label>
-                  <input type="number" min="1" max="10" value={bs} onChange={(e) => setBs(Number(e.target.value))} />
+                  <input {...bsInput} />
                   <div className="hint">
                     {bs >= 10
                       ? (critNeed !== null ? 'Automatic hit, automatic Critical Hit' : 'Automatic hit')
@@ -352,18 +403,18 @@ export default function Page() {
               <div className="subgrid">
                 <div className="field">
                   <label>Firepower (FP)</label>
-                  <input type="number" min="1" max="20" value={fp} onChange={(e) => setFp(Math.max(1, Number(e.target.value) || 1))} />
+                  <input {...fpInput} />
                 </div>
                 <div className="field">
                   <label>Models Firing</label>
-                  <input type="number" min="1" max="100" value={modelsFiring} onChange={(e) => setModelsFiring(Math.max(1, Number(e.target.value) || 1))} />
+                  <input {...modelsFiringInput} />
                 </div>
               </div>
               <div className="divider-label">Weapon Profile</div>
               <div className="subgrid">
                 <div className="field">
                   <label>Strength (S)</label>
-                  <input type="number" min="1" max="20" value={str} onChange={(e) => setStr(Number(e.target.value) || 1)} />
+                  <input {...strInput} />
                 </div>
                 <div className="field">
                   <label>AP</label>
@@ -376,7 +427,7 @@ export default function Page() {
               </div>
               <div className="field">
                 <label>Damage (D)</label>
-                <input type="number" min="1" max="20" value={dmg} onChange={(e) => setDmg(Number(e.target.value) || 1)} />
+                <input {...dmgInput} />
               </div>
                 <div className="divider-label">Special Rules</div>
                   <SpecialRuleList
@@ -395,16 +446,16 @@ export default function Page() {
               <div className="subgrid">
                 <div className="field">
                   <label>Toughness (T)</label>
-                  <input type="number" min="1" max="20" value={tough} onChange={(e) => setTough(Number(e.target.value) || 1)} />
+                  <input {...toughInput} />
                 </div>
                 <div className="field">
                   <label>Wounds/Model (W)</label>
-                  <input type="number" min="1" max="20" value={woundsPerModel} onChange={(e) => setWoundsPerModel(Math.max(1, Number(e.target.value) || 1))} />
+                  <input {...woundsPerModelInput} />
                 </div>
               </div>
               <div className="field">
                 <label>Models in Unit</label>
-                <input type="number" min="1" max="60" value={modelsTarget} onChange={(e) => setModelsTarget(Math.max(1, Number(e.target.value) || 1))} />
+                <input {...modelsTargetInput} />
               </div>
               <div className="divider-label">Saves — best applicable is used</div>
               <div className="field">
