@@ -170,7 +170,7 @@ export function getEffectiveCriticalThreshold(bs, activeOffensiveRules = [], isS
  * All bucket values are ABSOLUTE probabilities (already include pHit), not
  * conditional on a hit.
  */
-export function resolveAttackProbabilities(bs, S, T, activeOffensiveRules = [], activeDefensiveRules = [], isSnapShot = false) {
+export function resolveAttackProbabilities(bs, S, T, isSnapShot = false, activeOffensiveRules = [], activeDefensiveRules = []) {
   const hitNeed = isSnapShot ? needForBSSnapShot(bs) : needForBS(bs);
 
   const ironHandsRule = activeDefensiveRules.find((r) => r.id === 'ironHands');

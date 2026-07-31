@@ -104,3 +104,140 @@ export const DEFENSIVE_SPECIAL_RULE_DEFINITIONS = [
   // future rules go here, e.g.:
   // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
 ];
+
+export const TRAITS_DEFINITIONS = [
+  {
+    id: 'arc',
+    label: 'Arc',
+    valueLabel: 'X',
+    description: 'Arc Trait.',
+  },
+  {
+    id: 'assault',
+    label: 'Assault',
+    valueLabel: 'X',
+    description: 'Assault Trait.',
+  },
+  {
+    id: 'auto',
+    label: 'Auto',
+    valueLabel: 'X',
+    description: 'Auto Trait.',
+  },
+  {
+    id: 'bolt',
+    label: 'Bolt',
+    valueLabel: 'X',
+    description: 'Bolt Trait.',
+  },
+  {
+    id: 'conversion',
+    label: 'Conversion',
+    valueLabel: 'X',
+    description: 'Conversion Trait.',
+  },
+  {
+    id: 'disintegrator',
+    label: 'Disintegrator',
+    valueLabel: 'X',
+    description: 'Disintegrator Trait.',
+  },
+  {
+    id: 'graviton',
+    label: 'Graviton',
+    valueLabel: 'X',
+    description: 'Graviton Trait.',
+  },
+  {
+    id: 'flame',
+    label: 'Flame',
+    valueLabel: 'X',
+    description: 'Flame Trait.',
+  },
+  {
+    id: 'las',
+    label: 'Las',
+    valueLabel: 'X',
+    description: 'Las Trait.',
+  },
+  {
+    id: 'melta',
+    label: 'Melta',
+    valueLabel: 'X',
+    description: 'Melta Trait.',
+  },
+  {
+    id: 'missile',
+    label: 'Missile',
+    valueLabel: 'X',
+    description: 'Missile Trait.',
+  },
+  {
+    id: 'needle',
+    label: 'Needle',
+    valueLabel: 'X',
+    description: 'Needle Trait.',
+  },
+  {
+    id: 'particle',
+    label: 'Particle',
+    valueLabel: 'X',
+    description: 'Particle Trait.',
+  },
+  {
+    id: 'phosphex',
+    label: 'Phosphex',
+    valueLabel: 'X',
+    description: 'Phosphex Trait.',
+  },
+  {
+    id: 'plasma',
+    label: 'Plasma',
+    valueLabel: 'X',
+    description: 'Plasma Trait.',
+  },
+  {
+    id: 'rad',
+    label: 'Rad',
+    valueLabel: 'X',
+    description: 'Rad Trait.',
+  },
+  {
+    id: 'sonic',
+    label: 'Sonic',
+    valueLabel: 'X',
+    description: 'Sonic Trait.',
+  },
+  {
+    id: 'stasis',
+    label: 'Stasis',
+    valueLabel: 'X',
+    description: 'Stasis Trait.',
+  },
+  {
+    id: 'strategic',
+    label: 'Strategic',
+    valueLabel: 'X',
+    description: 'Strategic Trait.',
+  },
+  {
+    id: 'strike',
+    label: 'Strike',
+    valueLabel: 'X',
+    description: 'Strike Trait.',
+  },
+  {
+    id: 'tactical',
+    label: 'Tactical',
+    valueLabel: 'X',
+    description: 'Tactical Trait.',
+  },
+  {
+    id: 'volkite',
+    label: 'Volkite',
+    valueLabel: 'X',
+    description: 'Volkite Trait.',
+  },
+  // future rules go here, e.g.:
+  // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X',  description: 'Description of the trait'},
+];

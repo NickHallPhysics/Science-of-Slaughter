@@ -26,6 +26,7 @@ import {
 import {
   OFFENSIVE_SPECIAL_RULE_DEFINITIONS,
   DEFENSIVE_SPECIAL_RULE_DEFINITIONS,
+  TRAITS_DEFINITIONS,
 } from '../lib/specialRules.js';
 import { 
   DAMAGE_MITIGATION_DEFINITIONS 
@@ -193,14 +194,17 @@ function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }
       {activeRules.map((rule) => {
         const def = definitions.find((d) => d.id === rule.id);
         if (!def) return null;
+        const hasOptions = Array.isArray(def.options) && def.options.length > 0;
         return (
           <div className="rule-row" key={rule.id}>
             <span className="rule-name">{def.label}</span>
-            <select value={rule.value} onChange={(e) => onUpdate(rule.id, Number(e.target.value), definitions)}>
-              {def.options.map((v) => (
-                <option key={v} value={v}>{v}{def.optionSuffix ?? '+'}</option>
-              ))}
-            </select>
+            {hasOptions ? (
+              <select value={rule.value} onChange={(e) => onUpdate(rule.id, Number(e.target.value), definitions)}>
+                {def.options.map((v) => (
+                  <option key={v} value={v}>{v}{def.optionSuffix ?? '+'}</option>
+                ))}
+              </select>
+            ): null}
             <button type="button" className="rule-remove" onClick={() => onRemove(rule.id, definitions)} aria-label={`Remove ${def.label}`}>×</button>
           </div>
         );
@@ -229,34 +233,41 @@ export default function Page() {
 
   // special rule handelling
   const [activeOffensiveRules, setActiveOffensiveRules] = useState([]); // [{ id, value }]
+  const [activeTraits, setActiveTraits] = useState([])
   const [activeMitigationRules, setActiveMitigationRules] = useState([]);
   const [activeDefensiveRules, setActiveDefensiveRules] = useState([]); // [{ id, value }]
   
-  const availableOffensiveRules = OFFENSIVE_SPECIAL_RULE_DEFINITIONS.filter(
-    (def) => !activeOffensiveRules.some((r) => r.id === def.id)
-  );
+  // const availableOffensiveRules = OFFENSIVE_SPECIAL_RULE_DEFINITIONS.filter(
+  //   (def) => !activeOffensiveRules.some((r) => r.id === def.id)
+  // );
 
-  const availableDefensiveRules = DEFENSIVE_SPECIAL_RULE_DEFINITIONS.filter(
-    (def) => !activeDefensiveRules.some((r) => r.id === def.id)
-  );
+  // const availableDefensiveRules = DEFENSIVE_SPECIAL_RULE_DEFINITIONS.filter(
+  //   (def) => !activeDefensiveRules.some((r) => r.id === def.id)
+  // );
 
   function addRule(id, definitions) {
     const def = definitions.find((d) => d.id === id);
     if (!def) return;
-    else if (definitions==OFFENSIVE_SPECIAL_RULE_DEFINITIONS){
-      setActiveOffensiveRules((prev) => [...prev, { id, value: def.defaultValue }]);
-    }
-    else if (definitions==DEFENSIVE_SPECIAL_RULE_DEFINITIONS){
-      setActiveDefensiveRules((prev) => [...prev, { id, value: def.defaultValue }]);
-    }
-    else if (definitions==DAMAGE_MITIGATION_DEFINITIONS){
-      setActiveMitigationRules((prev) => [...prev, { id, value: def.defaultValue }]);
+    const hasOptions = Array.isArray(def.options) && def.options.length > 0;
+    const value = hasOptions ? def.defaultValue : def.fixedValue;
+
+    if (definitions === OFFENSIVE_SPECIAL_RULE_DEFINITIONS) {
+      setActiveOffensiveRules((prev) => [...prev, { id, value }]);
+    } else if (definitions === TRAITS_DEFINITIONS) {
+      setActiveTraits((prev) => [...prev, { id, value }]);
+    } else if (definitions === DEFENSIVE_SPECIAL_RULE_DEFINITIONS) {
+      setActiveDefensiveRules((prev) => [...prev, { id, value }]);
+    } else if (definitions === DAMAGE_MITIGATION_DEFINITIONS) {
+      setActiveMitigationRules((prev) => [...prev, { id, value }]);
     }
   }
 
   function updateRuleValue(id, value, definitions) {
     if (definitions==OFFENSIVE_SPECIAL_RULE_DEFINITIONS){
       setActiveOffensiveRules((prev) => prev.map((r) => (r.id === id ? { ...r, value } : r)));
+    }
+    else if (definitions==TRAITS_DEFINITIONS){
+      setActiveTraits((prev) => prev.map((r) => (r.id === id ? { ...r, value } : r)));
     }
     else if (definitions==DEFENSIVE_SPECIAL_RULE_DEFINITIONS){
       setActiveDefensiveRules((prev) => prev.map((r) => (r.id === id ? { ...r, value } : r)));
@@ -269,6 +280,9 @@ export default function Page() {
   function removeRule(id, definitions) {
     if (definitions==OFFENSIVE_SPECIAL_RULE_DEFINITIONS){
       setActiveOffensiveRules((prev) => prev.filter((r) => r.id !== id));
+    }
+    else if (definitions==TRAITS_DEFINITIONS){
+      setActiveTraits((prev) => prev.filter((r) => r.id !== id));
     }
     else if (definitions==DEFENSIVE_SPECIAL_RULE_DEFINITIONS){
       setActiveDefensiveRules((prev) => prev.filter((r) => r.id !== id));
@@ -295,14 +309,14 @@ export default function Page() {
   const [tough, toughInput] = useNumericField(4, { min: 1, max: 20 });
   const [woundsPerModel, woundsPerModelInput] = useNumericField(1, { min: 1, max: 20 });
   const [modelsTarget, modelsTargetInput] = useNumericField(10, { min: 1, max: 60 });
-  const [armour, setArmour] = useState(4);
+  const [armour, setArmour] = useState(3);
   const [invuln, setInvuln] = useState(7);
   const [cover, setCover] = useState(7);
 
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
     const { pHit, pWound, hitNeed, wNeed, buckets } =
-      resolveAttackProbabilities(bs, str, tough, activeOffensiveRules, activeDefensiveRules, isSnapShot);
+      resolveAttackProbabilities(bs, str, tough, isSnapShot, activeOffensiveRules, activeDefensiveRules);
 
     const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, saveNormal, saveBreach } =
       resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
@@ -452,6 +466,14 @@ export default function Page() {
                     onUpdate={updateRuleValue}
                     onRemove={removeRule}
                   />
+                <div className="divider-label">Traits</div>
+                  <SpecialRuleList
+                    activeRules={activeTraits}
+                    definitions={TRAITS_DEFINITIONS}
+                    onAdd={addRule}
+                    onUpdate={updateRuleValue}
+                    onRemove={removeRule}
+                  />
               </div>
             </div>
 
@@ -504,7 +526,7 @@ export default function Page() {
                   onRemove={removeRule}
                 />
               <div className="hint">{mitigationHint}</div>
-              <div className="divider-label">Target Special Rules</div>
+              <div className="divider-label">Special Rules</div>
                 <SpecialRuleList
                   activeRules={activeDefensiveRules}
                   definitions={DEFENSIVE_SPECIAL_RULE_DEFINITIONS}
