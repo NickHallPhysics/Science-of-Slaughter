@@ -1,55 +1,55 @@
-# Science of Slaughter — Shooting Phase Resolver (React)
+# Science of Slaughter
 
-A React project to simulate the binomial combat probabilities of the Shooting 
-Phase for Horus Heresy 3rd Edition. Future developments will include Assault 
-Phase and Challenge Subphase probability visualisations.
+A project to simulate the binomial combat probabilities of the different 
+Phases for Horus Heresy 3rd Edition. 
 
-## Setup
+## Project overview
 
-```bash
-npm install
-```
+Too often conversations around the odds of one unit "defeating" another unit
+or succeeding in some objective focus around the "average" result. Something 
+like:
 
-## Run the app locally
+"Oh well this unit will do 3.666666... wounds so it should be fine"
 
-```bash
-npm run dev
-```
+There are a few problems with this. Firstly, we don't have 0.666666... of a 
+model remove. Secondly, it's often more useful to know "I've got a 43% chance
+of removing X models" than knowing the average number of wounds inflicted.
 
-This starts a Vite dev server (usually http://localhost:5173) with hot reload.
+This project aims to rectify this by providing an interactive UI where 
+curious players can investigate these kind of probabilities and make informed 
+decisions.
 
-## Run the tests
+## State of the Project
 
-```bash
-npm test
-```
+Currently, the project has:
 
-Runs the Vitest suites in `src/lib/combatMath.test.js` and 
-`src/lib/specialRules.test.js` once and exits. Use `npm run test:watch` 
-to keep it running while you edit.
+o Probabilities for Shooting attacks against Infantry. This can also be used to simulate Volley Attacks as part of the Charge Phase. At this stage, all models are assumed to fire the same weapon.
 
-## Build for deployment
+Future developments will include:
 
-```bash
-npm run build
-```
-
-Outputs a static site to `dist/`, which you can deploy anywhere that serves
-static files (Netlify, Vercel, GitHub Pages, S3, etc.). Preview the build
-locally with `npm run preview`.
+o Mixed weapons to be incorporated into the shooting vs infantry utility
+o Probabilities for shooting against vehicles
+o Probabilities for casualties close combat attacks against Infantry
+o Probabilities for outcomes in a Challenge
+o Probabilities for advanced statistics outcome (i.e. statuses, combat outcomes)
+o Comparative capabilities between different weapons, different squad loadouts etc
 
 ## Project layout
 
 ```
 src/
-  lib/
+  lib/ <- folder where all the functionality for maths and rule definitions  
     combatMath.js       <- pure probability functions (the single source of truth)
     combatMath.test.js  <- Vitest suite, imports directly from combatMath.js
     specialRules.js       <- special rule definitions (the single source of truth)
     specialRules.test.js  <- Vitest suite, imports directly from specialRules.js
-  App.jsx                <- UI: inputs, useMemo pipeline, Chart.js bar charts
-  App.css                <- parchment/manuscript theme
+    damageMitigation.js       <- damage mitigation rule definitions (the single source of truth)
+    damageMitigation.test.js  <- Vitest suite, imports directly from damageMitigation.js
+  shooting/ <- folder where the landing pages for shooting phase pages go
+    shootingInfantry-page.jsx <- landing page for 
+  landing-page.jsx                <- central landing page, where all the buttons to navigate to all the other pages
+  globals.css                <- definitions for all aesthetic elements
   main.jsx                <- React entry point
 public/
-  parchment-bg.jpg        <- background texture referenced by App.css
+  parchment-bg.jpg        <- background texture referenced by globals.css
 ```
