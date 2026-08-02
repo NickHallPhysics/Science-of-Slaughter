@@ -170,7 +170,8 @@ export function getEffectiveCriticalThreshold(bs, activeOffensiveRules = [], isS
  * All bucket values are ABSOLUTE probabilities (already include pHit), not
  * conditional on a hit.
  */
-export function resolveAttackProbabilities(bs, S, T, isSnapShot = false, activeOffensiveRules = [], activeDefensiveRules = []) {
+export function resolveAttackProbabilities(bs, S, T, isSnapShot = false, activeTraits=[], 
+  activeOffensiveRules = [], activeDefensiveRules = [], numberShots=1) {
   const hitNeed = isSnapShot ? needForBSSnapShot(bs) : needForBS(bs);
 
   const ironHandsRule = activeDefensiveRules.find((r) => r.id === 'ironHands');
@@ -242,6 +243,15 @@ export function resolveAttackProbabilities(bs, S, T, isSnapShot = false, activeO
     const candidateThresholds = [hitNeed];
     if (Xrend !== null) candidateThresholds.push(Xrend);
     if (Xcrit !== null) candidateThresholds.push(Xcrit);
+    const imperialFistsRule = activeOffensiveRules.find((r) => r.id === 'imperialFists');
+    if (imperialFistsRule) {
+      if (activeTraits.find(r=> imperialFistsRule.traits.includes(r.id)) && numberShots >= 5) {
+          if (hitNeed < 7 && hitNeed > 2 && hitNeed != null) {
+            const modHitNeed = hitNeed - imperialFistsRule.value
+            candidateThresholds.push(modHitNeed);
+          }
+        }
+      }
     const effHitNeed = Math.min(...candidateThresholds);
     pHit = pFromNeed(effHitNeed);
 
@@ -278,8 +288,8 @@ export function resolveAttackProbabilities(bs, S, T, isSnapShot = false, activeO
  * involved, unlike Damage Mitigation. Returns damage unchanged if the
  * rule isn't active.
  */
-export function applyEternalWarrior(damage, activeTargetRules = []) {
-  const ewRule = activeTargetRules.find((r) => r.id === 'eternalWarrior');
+export function applyEternalWarrior(damage, activeDefensiveRules = []) {
+  const ewRule = activeDefensiveRules.find((r) => r.id === 'eternalWarrior');
   if (!ewRule) return damage;
   return Math.max(1, damage - ewRule.value);
 }
@@ -339,6 +349,67 @@ export function applyWoundGroupToState(state, N, Dval, W, targetModels) {
 
   // leftover wounds (guaranteed < killFull here) damage one more fresh model
   return remaining > 0 ? { killed, wounded_model: W - remaining * Dval } : { killed, wounded_model: W };
+}
+
+/**
+ * Like applyWoundGroupToState, but each FRESH model independently makes a
+ * Recovery Test (Medic) the moment it's first allocated a wound: with
+ * probability pMedic, that model effectively has W+1 Wounds for the rest
+ * of the attack (mathematically identical to "one wound's Damage reduced
+ * by 1", since Damage is always >=1 and totals are purely additive).
+ * Once resolved for a given model, its outcome is fixed — it is NOT
+ * re-rolled by later Fire Groups/tiers, or by Deflagrate's follow-up
+ * wave, within the same attack.
+ *
+ * state: { killed, wounded_model, medicResolved } — medicResolved is false
+ * only for a fresh model that hasn't yet taken any wound.
+ */
+export function applyWoundGroupToStateWithMedic(state, N, Dval, W, targetModels, pMedic) {
+  let work = [{ state: { ...state }, remaining: N, prob: 1 }];
+  const finished = [];
+
+  while (work.length > 0) {
+    const item = work.pop();
+    if (item.state.killed >= targetModels || item.remaining <= 0) {
+      finished.push(item);
+      continue;
+    }
+    const candidates = item.state.medicResolved
+      ? [{ wounded_model: item.state.wounded_model, prob: 1 }]
+      : [
+          { wounded_model: W + 1, prob: pMedic },
+          { wounded_model: W, prob: 1 - pMedic },
+        ].filter((c) => c.prob > 1e-15);
+
+    for (const c of candidates) {
+      const killCurrent = Math.ceil(c.wounded_model / Dval);
+      const newProb = item.prob * c.prob;
+      if (item.remaining < killCurrent) {
+        finished.push({
+          state: { killed: item.state.killed, wounded_model: c.wounded_model - item.remaining * Dval, medicResolved: true },
+          remaining: 0,
+          prob: newProb,
+        });
+      } else {
+        const newKilled = item.state.killed + 1;
+        const newRemaining = item.remaining - killCurrent;
+        if (newKilled >= targetModels) {
+          finished.push({ state: { killed: targetModels, wounded_model: 0, medicResolved: false }, remaining: 0, prob: newProb });
+        } else {
+          work.push({ state: { killed: newKilled, wounded_model: 0, medicResolved: false }, remaining: newRemaining, prob: newProb });
+        }
+      }
+    }
+  }
+
+  const merged = new Map();
+  for (const f of finished) {
+    const key = `${f.state.killed},${f.state.wounded_model},${f.state.medicResolved}`;
+    const existing = merged.get(key);
+    if (existing) existing.prob += f.prob;
+    else merged.set(key, { state: f.state, prob: f.prob });
+  }
+  return [...merged.values()];
 }
 
 /**
@@ -415,14 +486,18 @@ export function computeModelsRemovedWithFireGroups(totalDice, pUnsavedNormal, pU
  * with 3 simultaneous non-trivial tiers can become slow — see note below
  * the code.
  */
-export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels) {
+export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels, pMedic = 0) {
   if (targetModels <= 0) return { distModels: [1], branches: [] };
 
   const sorted = [...tiers]
     .filter((t) => t.pUnsaved > 1e-14)
     .sort((a, b) => a.damage - b.damage);
 
-  let branches = [{ diceRemaining: totalDice, pMassRemaining: 1, state: { killed: 0, wounded_model: W }, prob: 1 }];
+  const initialState = pMedic > 0
+    ? { killed: 0, wounded_model: W, medicResolved: false }
+    : { killed: 0, wounded_model: W };
+
+  let branches = [{ diceRemaining: totalDice, pMassRemaining: 1, state: initialState, prob: 1 }];
 
   for (const tier of sorted) {
     const nextBranches = [];
@@ -436,18 +511,33 @@ export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels)
       for (let k = 0; k <= br.diceRemaining; k++) {
         const pk = countDist[k];
         if (pk <= 1e-14) continue;
-        const newState = applyWoundGroupToState(br.state, k, tier.damage, W, targetModels);
-        nextBranches.push({
-          diceRemaining: br.diceRemaining - k,
-          pMassRemaining: br.pMassRemaining - tier.pUnsaved,
-          state: newState,
-          prob: br.prob * pk,
-        });
+
+        if (pMedic > 0) {
+          const subBranches = applyWoundGroupToStateWithMedic(br.state, k, tier.damage, W, targetModels, pMedic);
+          for (const sb of subBranches) {
+            nextBranches.push({
+              diceRemaining: br.diceRemaining - k,
+              pMassRemaining: br.pMassRemaining - tier.pUnsaved,
+              state: sb.state,
+              prob: br.prob * pk * sb.prob,
+            });
+          }
+        } else {
+          const newState = applyWoundGroupToState(br.state, k, tier.damage, W, targetModels);
+          nextBranches.push({
+            diceRemaining: br.diceRemaining - k,
+            pMassRemaining: br.pMassRemaining - tier.pUnsaved,
+            state: newState,
+            prob: br.prob * pk,
+          });
+        }
       }
     }
     const merged = new Map();
     for (const b of nextBranches) {
-      const key = `${b.diceRemaining},${b.state.killed},${b.state.wounded_model}`;
+      const key = pMedic > 0
+        ? `${b.diceRemaining},${b.state.killed},${b.state.wounded_model},${b.state.medicResolved}`
+        : `${b.diceRemaining},${b.state.killed},${b.state.wounded_model}`;
       const existing = merged.get(key);
       if (existing) existing.prob += b.prob;
       else merged.set(key, b);
@@ -466,6 +556,7 @@ export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels)
     N: totalDice - br.diceRemaining,
     killed: br.state.killed,
     wounded_model: br.state.wounded_model,
+    medicResolved: pMedic > 0 ? br.state.medicResolved : false,
     prob: br.prob,
   }));
 
@@ -491,12 +582,12 @@ export function computeModelsRemovedMultiTier(totalDice, tiers, W, targetModels)
  * Deflagrate wave would resolve, that branch contributes nothing to the
  * wounds/unsaved distributions (there's no unit left to wound).
  */
-export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, targetModels, totalDice, pMitigationFail = 1, activeTargetRules = []) {
+export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, targetModels, totalDice, pMitigationFail = 1, activeDefensiveRules = [], pMedic = 0) {
   const wNeedDeflagrate = needForWound(X, T);
   const pWoundDeflagrate = wNeedDeflagrate === null ? 0 : (7 - wNeedDeflagrate) / 6;
   const saveDeflagrate = resolveSave(7, armour, invuln, cover);
   const pUnsavedDeflagrate = pWoundDeflagrate * saveDeflagrate.pUnsaved * pMitigationFail;
-  const deflagrateDamage = applyEternalWarrior(1, activeTargetRules);
+  const deflagrateDamage = applyEternalWarrior(1, activeDefensiveRules);
 
   const distModels = new Array(targetModels + 1).fill(0);
   const distWoundsCaused = new Array(totalDice + 1).fill(0);
@@ -517,8 +608,19 @@ export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, ta
     for (let c = 0; c <= br.N; c++) {
       const pc = unsavedPMF[c];
       if (pc <= 1e-14) continue;
-      const finalState = applyWoundGroupToState({ killed: br.killed, wounded_model: br.wounded_model }, c, deflagrateDamage, W, targetModels);
-      distModels[finalState.killed] += br.prob * pc;
+
+      if (pMedic > 0) {
+        const subBranches = applyWoundGroupToStateWithMedic(
+          { killed: br.killed, wounded_model: br.wounded_model, medicResolved: br.medicResolved },
+          c, deflagrateDamage, W, targetModels, pMedic
+        );
+        for (const sb of subBranches) {
+          distModels[sb.state.killed] += br.prob * pc * sb.prob;
+        }
+      } else {
+        const finalState = applyWoundGroupToState({ killed: br.killed, wounded_model: br.wounded_model }, c, deflagrateDamage, W, targetModels);
+        distModels[finalState.killed] += br.prob * pc;
+      }
     }
   }
 
@@ -526,19 +628,29 @@ export function applyDeflagrateWave(branches, X, T, armour, invuln, cover, W, ta
 }
 
 /**
- * Resolves the Damage Mitigation roll for a target unit. Unlike
- * Armour/Invulnerable/Cover (where a model picks the single best save to
- * use), Damage Mitigation is an ADDITIONAL, independent test rolled only
- * after a wound has already failed its Saving Throw. If multiple Damage
- * Mitigation rules are active, the best (lowest X) is used — same
- * "best available" convention as the normal saves. Unlike Armour, it is
- * not affected by AP/Breaching.
+ * Resolves which SINGLE Damage Mitigation rule a model actually uses: out
+ * of every active Damage Mitigation rule (Shrouded, Feel No Pain, Medic,
+ * ...), only the one with the highest probability of success applies —
+ * since they all share the same "roll >= X" mechanic, this is simply
+ * whichever active rule has the lowest X. A model can only ever benefit
+ * from one, even if several are active simultaneously.
+ *
+ * Medic works fundamentally differently from the others once selected: it
+ * doesn't reduce a per-wound probability (pMitigationFail stays at 1, i.e.
+ * unused) — instead it hands back pMedic, the Recovery Test pass chance,
+ * for the per-model +1 Wound mechanism (see applyWoundGroupToStateWithMedic).
+ * If a roll-to-ignore rule wins instead, pMedic is 0 and pMitigationFail
+ * behaves exactly as it always has.
  */
 export function resolveDamageMitigation(activeMitigationRules = []) {
   if (activeMitigationRules.length === 0) {
-    return { mitigationValue: null, ruleId: null, pMitigate: 0, pMitigationFail: 1 };
+    return { mitigationValue: null, ruleId: null, pMitigate: 0, pMitigationFail: 1, pMedic: 0 };
   }
   const best = activeMitigationRules.reduce((a, b) => (b.value < a.value ? b : a));
-  const pMitigate = best.value <= 6 ? (7 - best.value) / 6 : 0;
-  return { mitigationValue: best.value, ruleId: best.id, pMitigate, pMitigationFail: 1 - pMitigate };
+  const pSuccess = best.value <= 6 ? (7 - best.value) / 6 : 0;
+
+  if (best.id === 'medic') {
+    return { mitigationValue: best.value, ruleId: 'medic', pMitigate: 0, pMitigationFail: 1, pMedic: pSuccess };
+  }
+  return { mitigationValue: best.value, ruleId: best.id, pMitigate: pSuccess, pMitigationFail: 1 - pSuccess, pMedic: 0 };
 }

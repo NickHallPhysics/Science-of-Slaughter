@@ -249,16 +249,18 @@ export default function Page() {
     const def = definitions.find((d) => d.id === id);
     if (!def) return;
     const hasOptions = Array.isArray(def.options) && def.options.length > 0;
+    const hasTraits = Array.isArray(def.traitsValid) && def.traitsValid.length > 0;
     const value = hasOptions ? def.defaultValue : def.fixedValue;
+    const traits = hasTraits ? def.traitsValid : [];
 
     if (definitions === OFFENSIVE_SPECIAL_RULE_DEFINITIONS) {
-      setActiveOffensiveRules((prev) => [...prev, { id, value }]);
+      setActiveOffensiveRules((prev) => [...prev, { id, value, traits }]);
     } else if (definitions === TRAITS_DEFINITIONS) {
-      setActiveTraits((prev) => [...prev, { id, value }]);
+      setActiveTraits((prev) => [...prev, { id, value, traits }]);
     } else if (definitions === DEFENSIVE_SPECIAL_RULE_DEFINITIONS) {
-      setActiveDefensiveRules((prev) => [...prev, { id, value }]);
+      setActiveDefensiveRules((prev) => [...prev, { id, value, traits }]);
     } else if (definitions === DAMAGE_MITIGATION_DEFINITIONS) {
-      setActiveMitigationRules((prev) => [...prev, { id, value }]);
+      setActiveMitigationRules((prev) => [...prev, { id, value, traits }]);
     }
   }
 
@@ -315,10 +317,13 @@ export default function Page() {
 
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
+    const numberShots = fp * modelsFiring;
     const { pHit, pWound, hitNeed, wNeed, buckets } =
-      resolveAttackProbabilities(bs, str, tough, isSnapShot, activeOffensiveRules, activeDefensiveRules);
+      resolveAttackProbabilities(bs, str, tough, isSnapShot, activeTraits, activeOffensiveRules, activeDefensiveRules, numberShots);
 
-    const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, saveNormal, saveBreach } =
+    const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, 
+      pUnsavedTierDplus0Murderous, pUnsavedTierDplus1Murderous, pUnsavedTierDplus2Murderous,
+      saveNormal, saveBreach } =
       resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
 
     const totalDice = fp * modelsFiring;
@@ -331,15 +336,18 @@ export default function Page() {
     const mitigation = resolveDamageMitigation(activeMitigationRules);
 
     const tiers = [
-        { damage: applyEternalWarrior(dmg, activeDefensiveRules), pUnsaved: pUnsavedTierDplus0 * mitigation.pMitigationFail },
-        { damage: applyEternalWarrior(dmg + 1, activeDefensiveRules), pUnsaved: pUnsavedTierDplus1 * mitigation.pMitigationFail },
-        { damage: applyEternalWarrior(dmg + 2, activeDefensiveRules), pUnsaved: pUnsavedTierDplus2 * mitigation.pMitigationFail },
-      ];
+      { damage: applyEternalWarrior(dmg, activeDefensiveRules), pUnsaved: pUnsavedTierDplus0 * mitigation.pMitigationFail },
+      { damage: dmg, pUnsaved: pUnsavedTierDplus0Murderous * mitigation.pMitigationFail },
+      { damage: applyEternalWarrior(dmg + 1, activeDefensiveRules), pUnsaved: pUnsavedTierDplus1 * mitigation.pMitigationFail },
+      { damage: dmg + 1, pUnsaved: pUnsavedTierDplus1Murderous * mitigation.pMitigationFail },
+      { damage: applyEternalWarrior(dmg + 2, activeDefensiveRules), pUnsaved: pUnsavedTierDplus2 * mitigation.pMitigationFail },
+      { damage: dmg + 2, pUnsaved: pUnsavedTierDplus2Murderous * mitigation.pMitigationFail },
+    ];
 
     const deflagrateRule = activeOffensiveRules.find((r) => r.id === 'deflagrate');
 
     const { distModels: distModelsPreDeflagrate, branches } =
-      computeModelsRemovedMultiTier(totalDice, tiers, woundsPerModel, modelsTarget);
+      computeModelsRemovedMultiTier(totalDice, tiers, woundsPerModel, modelsTarget, mitigation.pMedic);
 
     let distModels = distModelsPreDeflagrate;
     let deflagrateWoundsCaused = null;
@@ -348,7 +356,7 @@ export default function Page() {
     if (deflagrateRule) {
       const deflagResult = applyDeflagrateWave(
         branches, deflagrateRule.value, tough, armour, invuln, cover,
-        woundsPerModel, modelsTarget, totalDice, mitigation.pMitigationFail, activeDefensiveRules
+        woundsPerModel, modelsTarget, totalDice, mitigation.pMitigationFail, activeDefensiveRules, mitigation.pMedic
       );
       distModels = deflagResult.distModels;
       deflagrateWoundsCaused = deflagResult.distWoundsCaused;
@@ -359,7 +367,7 @@ export default function Page() {
     return { hitNeed, pHit, wNeed, saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, 
       deflagrateUnsaved, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, mitigation };
     }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, 
-      activeOffensiveRules, activeMitigationRules, activeDefensiveRules, isSnapShot]);
+      activeOffensiveRules, activeMitigationRules, activeDefensiveRules, activeTraits, isSnapShot]);
 
   const { saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, deflagrateUnsaved, hitNeed, totalDice, 
     distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill, mitigation } = results;
@@ -380,7 +388,9 @@ export default function Page() {
   }
 
   const mitigationHint = mitigation.mitigationValue === null
-    ? 'No Damage Mitigation active.'
+  ? 'No Damage Mitigation active.'
+  : mitigation.ruleId === 'medic'
+    ? `Recovery Test: ${mitigation.mitigationValue}+ (Medic — model gains +1 effective Wound on a pass).`
     : `Mitigation: ${mitigation.mitigationValue}+ (rolled after a failed Save).`;
 
   return (
