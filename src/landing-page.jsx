@@ -7,10 +7,17 @@ import { Link } from 'react-router-dom';
 const PHASES = [
   {
     id: 'shooting',
-    label: 'Shooting Phase',
-    path: '/shooting',
-    description: 'Hit, wound, save, and casualty probabilities for ranged attacks in the Attack Sub-Phase.',
+    label: 'Shooting Phase - vs Infantry',
+    path: '/shootingInfantry',
+    description: 'Hit, wound, save, and casualty probabilities for ranged attacks against Infantry in the Attack Sub-Phase.',
     enabled: true,
+  },
+  {
+    id: 'shootingVehicles',
+    label: 'Shooting Phase - vs Vehicles',
+    path: '/shootingVehicles',
+    description: 'Hit, wound, save, and casualty probabilities for ranged attacks against Vehicles in the Attack Sub-Phase.',
+    enabled: false,
   },
   {
     id: 'challenge',
