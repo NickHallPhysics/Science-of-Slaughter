@@ -372,7 +372,7 @@ footer{
   font-size:13px; padding:0;
 }
 .rule-remove:hover{ background:var(--danger); color:var(--panel); border-color:var(--danger); }
-.rule-add{ margin-top:4px; background:var(--bg); border:1px solid var(--border); color:var(--text);
+.rule-add{ width: 100%;margin-top:4px; background:var(--bg); border:1px solid var(--border); color:var(--text);
 font-family:var(--mono); font-size:13px; padding:6px 8px; border-radius:2px;}
 
 .mean-group{
