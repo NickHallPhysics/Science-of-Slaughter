@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import LandingPage from './landing-page.jsx';
 import ShootingPage from './shooting/shootingInfantry-page.jsx';
+import AboutPage from './about-page.jsx';
 import './globals.css';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
@@ -11,7 +12,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/shootingInfantry" element={<ShootingPage />} />
-      </Routes>
+        <Route path="/about" element={<AboutPage />} />
+     </Routes>
     </HashRouter>
   </React.StrictMode>
 );

@@ -38,11 +38,15 @@ const PHASES = [
 export default function HomePage() {
   return (
     <div className="landing">
+      <Link to="/about" className="landing-button landing-button-small about-button">
+        <span className="landing-button-label">About</span>
+      </Link>
+
       <div className="landing-content">
         <p className="landing-eyebrow">A Combat Probability Toolkit</p>
         <h1 className="landing-banner">Science of Slaughter</h1>
         <p className="landing-subtitle">
-          See the probability distributions for lethal outcomes in each phase of the Horus Heresy. 
+          Exact probability distributions for every phase of tabletop combat — no dice, no guesswork, just the maths.
         </p>
 
         <div className="landing-buttons">
