@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ToggleButton from 'react-bootstrap/ToggleButton';
+import ToggleButtonGroup from 'react-bootstrap/ToggleButtonGroup';
 import { Link } from 'react-router-dom';
 import {
   Chart,
@@ -167,20 +169,34 @@ function BarChart({ series, stacked = false, hidden = {}, onToggle }) {
   return (
     <>
       {series.length > 1 && (
-        <div className="chart-legend">
-          {series.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className={`legend-item ${hidden[s.id] ? 'legend-item-hidden' : ''}`}
-              style={{ '--legend-color': s.color }}
-              onClick={() => onToggle(s.id)}
-            >
-              <span className="legend-swatch" />
-              {s.label}
-            </button>
-          ))}
-        </div>
+        <ToggleButtonGroup 
+          type="checkbox" 
+          defaultValue={series.map((s => s.value))} 
+          className="chart-legend">
+            {series.map((s) => (
+              <ToggleButton 
+              id={s.id} 
+              value={s.value}
+              onChange={() => onToggle(s.id)}>
+                {s.label}
+              </ToggleButton>
+            ))}
+        </ToggleButtonGroup>
+        // <div className="chart-legend">
+        //   {series.map((s) => (
+        //     <button 
+        //     style={{ backgroundColor: s.color }}
+        //       key={s.id}
+        //       type="button"
+        //       className={`legend-item ${hidden[s.id] ? 'legend-item-hidden' : ''}`}
+        //       style={{ '--legend-color': s.color }}
+        //       onClick={() => onToggle(s.id)}
+        //     >
+        //       <span className="legend-swatch" />
+        //       {s.label}
+        //     </button>
+        //   ))}
+        // </div>
       )}
       <canvas ref={canvasRef} />
     </>
@@ -588,8 +604,8 @@ export default function Page() {
                   series={
                     deflagrateRule
                       ? [
-                          { id: 'main', data: distWounds, color: COLORS.wounds, label: 'Wounds' },
-                          { id: 'deflagrate', data: deflagrateWoundsCaused, color: COLORS.deflagrate, label: 'Deflagrate Wounds' },
+                          { id: 'main', value:1, data: distWounds, color: COLORS.wounds, label: 'Wounds' },
+                          { id: 'deflagrate', value:2, data: deflagrateWoundsCaused, color: COLORS.deflagrate, label: 'Deflagrate Wounds' },
                         ]
                       : [{ id: 'main', data: distWounds, color: COLORS.wounds, label: 'Wounds' }]
                   }
@@ -622,8 +638,8 @@ export default function Page() {
                   series={
                     deflagrateRule
                       ? [
-                          { id: 'main', data: distUnsaved, color: COLORS.unsaved, label: 'Unsaved' },
-                          { id: 'deflagrate', data: deflagrateUnsaved, color: COLORS.deflagrate, label: 'Deflagrate Unsaved' },
+                          { id: 'main', value:1, data: distUnsaved, color: COLORS.unsaved, label: 'Unsaved' },
+                          { id: 'deflagrate', value:2, data: deflagrateUnsaved, color: COLORS.deflagrate, label: 'Deflagrate Unsaved' },
                         ]
                       : [{ id: 'main', data: distUnsaved, color: COLORS.unsaved, label: 'Unsaved' }]
                   }
