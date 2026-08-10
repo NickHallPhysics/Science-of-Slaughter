@@ -15,7 +15,18 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     options: [2, 3, 4, 5, 6],
     defaultValue: 6,
     optionSuffix: '+', // this is a threshold value, — render "X+"
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'A to-wound roll ≥ X sets the wound\'s AP to 2 for its save.',
+  },
+  {
+    id: 'bypass',
+    label: 'Bypass',
+    valueLabel: 'X',
+    options: [2, 3, 4, 5, 6],
+    defaultValue: 6,
+    optionSuffix: '+', // this is a threshold value, — render "X+"
+    phaseApplicable: ['assault_infantry',],
+    description: 'A to-wound roll ≥ X (before modifiers) ignores all saving throws and damage mitigation',
   },
   {
     id: 'criticalHit',
@@ -24,6 +35,7 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     options: [2, 3, 4, 5, 6],
     defaultValue: 6,
     optionSuffix: '+', // this is a threshold value, — render "X+"
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'A to-hit roll ≥ X (before modifiers) is a Critical Hit: the wound roll is treated as a 6, and that wound\'s Damage is increased by 1. Stacks with Shred.',
   },
   {
@@ -33,6 +45,7 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     options: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     defaultValue: 5,
     optionSuffix: '', // this is a Strength value — render "X"
+    phaseApplicable: ['shooting_infantry',],
     description: 'At the end of the attack, unsaved wounds from this weapon spawn an equal number of Strength X, AP \u2013, Damage 1 hits with no special rules, resolved against the same target.',
   },
   {
@@ -42,6 +55,7 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     fixedValue: 1,
     traitsValid: ['auto', 'bolt'],
     optionSuffix: '', // a flat addition to the Hit roll value, not a dice threshold
+    phaseApplicable: ['shooting_infantry',],
     description: 'Hit Tests made by Imperial Fists with Bolt or Auto weapons gain a +1.',
   },
   {
@@ -51,6 +65,7 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     options: [2, 3, 4, 5, 6],
     defaultValue: 6,
     optionSuffix: '+', // this is a threshold value, — render "X+"
+    phaseApplicable: ['shooting_infantry',],
     description: 'A to-wound roll ≥ X (before modifiers) ignores the Eternal Warrior (X) special rule',
   },
   {
@@ -60,6 +75,7 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     options: [2, 3, 4, 5, 6],
     defaultValue: 6,
     optionSuffix: '+', // this is a threshold value, — render "X+"
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'Roll ≥ X auto-wounds.',
   },
   {
@@ -69,6 +85,7 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     options: [2, 3, 4, 5, 6],
     defaultValue: 6,
     optionSuffix: '+', // this is a threshold value, — render "X+"
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'Roll ≥ X auto-hits and auto-wounds (treated as a 6 to wound).',
   },
   {
@@ -78,10 +95,11 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     options: [2, 3, 4, 5, 6],
     defaultValue: 6,
     optionSuffix: '+', // this is a threshold value, — render "X+"
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'A to-wound roll ≥ X, before modifiers, increases that wound\'s Damage by 1 if a wound is inflicted.',
   },
   // future rules go here, e.g.:
-  // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
+  // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], phaseApplicable: [], defaultValue: 5 },
 ];
 
 export const DEFENSIVE_SPECIAL_RULE_DEFINITIONS = [
@@ -100,6 +118,7 @@ export const DEFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     valueLabel: 'X',
     fixedValue: 1,
     optionSuffix: '', // a flat Damage reduction amount, not a dice threshold
+    phaseApplicable: ['shooting_infantry',],
     description: 'Shooting Attacks targeting Iron Hands suffer a -1 Strength penalty.',
   },
   {
@@ -108,10 +127,11 @@ export const DEFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     valueLabel: 'X',
     fixedValue: 3,
     optionSuffix: '', // a flat Damage reduction amount, not a dice threshold
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'Wound Tests made against Salamanders fail on the unmodified roll of 1 or 2.',
   },
   // future rules go here, e.g.:
-  // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },
+  // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], phaseApplicable: [], defaultValue: 5 },
 ];
 
 export const TRAITS_DEFINITIONS = [
@@ -119,134 +139,156 @@ export const TRAITS_DEFINITIONS = [
     id: 'arc',
     label: 'Arc',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'Arc Trait.',
   },
   {
     id: 'assault',
     label: 'Assault',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Assault Trait.',
   },
   {
     id: 'auto',
     label: 'Auto',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Auto Trait.',
   },
   {
     id: 'bolt',
     label: 'Bolt',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Bolt Trait.',
   },
   {
     id: 'conversion',
     label: 'Conversion',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Conversion Trait.',
   },
   {
     id: 'disintegrator',
     label: 'Disintegrator',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Disintegrator Trait.',
   },
   {
     id: 'graviton',
     label: 'Graviton',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'Graviton Trait.',
   },
   {
     id: 'flame',
     label: 'Flame',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Flame Trait.',
   },
   {
     id: 'las',
     label: 'Las',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'Las Trait.',
   },
   {
     id: 'melta',
     label: 'Melta',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Melta Trait.',
   },
   {
     id: 'missile',
     label: 'Missile',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Missile Trait.',
   },
   {
     id: 'needle',
     label: 'Needle',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Needle Trait.',
   },
   {
     id: 'particle',
     label: 'Particle',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Particle Trait.',
   },
   {
     id: 'phosphex',
     label: 'Phosphex',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Phosphex Trait.',
   },
   {
     id: 'plasma',
     label: 'Plasma',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Plasma Trait.',
   },
   {
     id: 'rad',
     label: 'Rad',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Rad Trait.',
   },
   {
     id: 'sonic',
     label: 'Sonic',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Sonic Trait.',
   },
   {
     id: 'stasis',
     label: 'Stasis',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Stasis Trait.',
   },
   {
     id: 'strategic',
     label: 'Strategic',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Strategic Trait.',
   },
   {
     id: 'strike',
     label: 'Strike',
     valueLabel: 'X',
+    phaseApplicable: ['assault_titan',],
     description: 'Strike Trait.',
   },
   {
     id: 'tactical',
     label: 'Tactical',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Tactical Trait.',
   },
   {
     id: 'volkite',
     label: 'Volkite',
     valueLabel: 'X',
+    phaseApplicable: ['shooting_infantry',],
     description: 'Volkite Trait.',
   },
   // future rules go here, e.g.:
-  // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X',  description: 'Description of the trait'},
+  // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', phaseApplicable: [],  description: 'Description of the trait'},
 ];

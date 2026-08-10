@@ -203,12 +203,18 @@ function BarChart({ series, stacked = false, hidden = {}, onToggle }) {
   );
 }
 
-function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }) {
-  const availableRules = definitions.filter((def) => !activeRules.some((r) => r.id === def.id));
+function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove, currentPhase }) {
+  const isApplicable = (def) =>
+    !currentPhase || !Array.isArray(def.phaseApplicable) || def.phaseApplicable.includes(currentPhase);
+
+  const availableRules = definitions
+    .filter((def) => !activeRules.some((r) => r.id === def.id))
+    .filter(isApplicable);
+
   return (
     <>
       {activeRules.map((rule) => {
-        const def = definitions.find((d) => d.id === rule.id);
+        const def = definitions.find((d) => d.id === rule.id); // unfiltered lookup — always show already-active rules
         if (!def) return null;
         const hasOptions = Array.isArray(def.options) && def.options.length > 0;
         return (
@@ -220,7 +226,7 @@ function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }
                   <option key={v} value={v}>{v}{def.optionSuffix ?? '+'}</option>
                 ))}
               </select>
-            ): null}
+            ) : null}
             <button type="button" className="rule-remove" onClick={() => onRemove(rule.id, definitions)} aria-label={`Remove ${def.label}`}>×</button>
           </div>
         );
@@ -491,6 +497,7 @@ export default function Page() {
                     onAdd={addRule}
                     onUpdate={updateRuleValue}
                     onRemove={removeRule}
+                    currentPhase="shooting_infantry"
                   />
                 <div className="divider-label">Traits</div>
                   <SpecialRuleList
@@ -499,6 +506,7 @@ export default function Page() {
                     onAdd={addRule}
                     onUpdate={updateRuleValue}
                     onRemove={removeRule}
+                    currentPhase="shooting_infantry"
                   />
               </div>
             </div>
@@ -550,6 +558,7 @@ export default function Page() {
                   onAdd={addRule}
                   onUpdate={updateRuleValue}
                   onRemove={removeRule}
+                  currentPhase="shooting_infantry"
                 />
               <div className="hint">{mitigationHint}</div>
               <div className="divider-label">Special Rules</div>
@@ -559,6 +568,7 @@ export default function Page() {
                   onAdd={addRule}
                   onUpdate={updateRuleValue}
                   onRemove={removeRule}
+                  currentPhase="shooting_infantry"
                 />
             </div>
           </div>
