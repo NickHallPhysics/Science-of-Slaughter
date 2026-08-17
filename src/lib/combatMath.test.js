@@ -3,6 +3,7 @@ import {
   needForBS,
   needForBSSnapShot,
   getEffectiveCriticalThreshold,
+  needForWS,
   pFromNeed,
   needForWound,
   resolveSave,
@@ -80,6 +81,64 @@ describe('resolveSave', () => {
   it('pSave / pUnsaved are complementary', () => {
     const r = resolveSave(3, 2, 7, 7);
     expect(r.pSave + r.pUnsaved).toBeCloseTo(1, 9);
+  });
+});
+
+describe('needForWS', () => {
+  it('attacker WS >= 2x target WS -> 2+', () => {
+    expect(needForWS(8, 4)).toBe(2);
+    expect(needForWS(10, 5)).toBe(2); // exact boundary, >=
+  });
+  it('attacker WS > target WS, but < 2x -> 3+', () => {
+    expect(needForWS(5, 4)).toBe(3);
+    expect(needForWS(9, 5)).toBe(3); // just under the 2x boundary
+  });
+  it('equal WS -> 4+', () => {
+    expect(needForWS(5, 5)).toBe(4);
+  });
+  it('target WS > attacker WS, but < 2x attacker -> 5+', () => {
+    expect(needForWS(4, 5)).toBe(5);
+    expect(needForWS(5, 9)).toBe(5);
+  });
+  it('target WS >= 2x attacker WS -> 6+', () => {
+    expect(needForWS(4, 8)).toBe(6);
+    expect(needForWS(5, 10)).toBe(6); // exact boundary
+  });
+  it('is exhaustive and non-overlapping across a wide range', () => {
+    for (let A = 1; A <= 20; A++) {
+      for (let T = 1; T <= 20; T++) {
+        const result = needForWS(A, T);
+        expect([2, 3, 4, 5, 6]).toContain(result);
+      }
+    }
+  });
+});
+
+describe('resolveAttackProbabilities — decoupled hitNeed/innateCritX (regression for shooting)', () => {
+  it('matches prior BS-driven behaviour when hitNeed/innateCritX are derived the old way', () => {
+    const bs = 9;
+    const hitNeed = needForBS(bs);
+    const innateCritX = getInnateCriticalX(bs);
+    const r = resolveAttackProbabilities(hitNeed, 1, 20, innateCritX, [], [], [], 1);
+    expect(r.pHit).toBeCloseTo(5 / 6, 9);
+    const tier1 = r.buckets.BreachDplus1 + r.buckets.noBreachDplus1;
+    expect(tier1).toBeCloseTo(4 / 6, 9); // innate crit still applies via the passed-in value
+  });
+
+  it('assault: no innate crit, only an explicit rule grants Critical Hit', () => {
+    const hitNeed = needForWS(8, 4); // 2+
+    const withoutExplicit = resolveAttackProbabilities(hitNeed, 1, 20, null, [], [], [], 1);
+    const tier1 = withoutExplicit.buckets.BreachDplus1 + withoutExplicit.buckets.noBreachDplus1;
+    expect(tier1).toBeCloseTo(0, 9);
+
+    const withExplicit = resolveAttackProbabilities(hitNeed, 1, 20, null, [], [{ id: 'criticalHit', value: 5 }], [], 1);
+    const tier1b = withExplicit.buckets.BreachDplus1 + withExplicit.buckets.noBreachDplus1;
+    expect(tier1b).toBeGreaterThan(0);
+  });
+
+  it('hitNeed=null (auto-hit) still works when passed directly, independent of bs/isSnapShot', () => {
+    const r = resolveAttackProbabilities(null, 4, 4, null, [], [], [], 1);
+    expect(r.pHit).toBe(1);
   });
 });
 

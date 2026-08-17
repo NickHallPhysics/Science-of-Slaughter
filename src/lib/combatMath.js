@@ -36,6 +36,20 @@ export function needForBSSnapShot(bs) {
   return 2; // BS10+
 }
 
+/**
+ * D6 result needed to hit in the Assault phase, comparing the attacking
+ * unit's Weapon Skill against the target's. Unlike needForBS (which only
+ * looks at the attacker), this is symmetric around WS parity and depends
+ * on both units' stats.
+ */
+export function needForWS(attackWS, targetWS) {
+  if (attackWS >= 2 * targetWS) return 2;
+  if (attackWS > targetWS) return 3;
+  if (attackWS === targetWS) return 4;
+  if (2 * attackWS > targetWS) return 5;
+  return 6;
+}
+
 /** Convert a "needs N+" value into a probability. null means "always succeeds". */
 export function pFromNeed(need) {
   return need === null ? 1 : (7 - need) / 6;
@@ -170,9 +184,8 @@ export function getEffectiveCriticalThreshold(bs, activeOffensiveRules = [], isS
  * All bucket values are ABSOLUTE probabilities (already include pHit), not
  * conditional on a hit.
  */
-export function resolveAttackProbabilities(bs, S, T, isSnapShot = false, activeTraits=[], 
+export function resolveAttackProbabilities(hitNeed, S, T, innateCritX, activeTraits=[], 
   activeOffensiveRules = [], activeDefensiveRules = [], numberShots=1) {
-  const hitNeed = isSnapShot ? needForBSSnapShot(bs) : needForBS(bs);
 
   const ironHandsRule = activeDefensiveRules.find((r) => r.id === 'ironHands');
   const effS = ironHandsRule ? Math.max(1, S-ironHandsRule.value) : S;
@@ -193,7 +206,10 @@ export function resolveAttackProbabilities(bs, S, T, isSnapShot = false, activeT
   const Xbreach = breachingRule ? breachingRule.value : null;
   const Xshred = shredRule ? shredRule.value : null;
   const Xrend = rendingRule ? rendingRule.value : null;
-  const Xcrit = getEffectiveCriticalThreshold(bs, activeOffensiveRules, isSnapShot);
+  const explicitCritRule = activeOffensiveRules.find((r) => r.id === 'criticalHit');
+  const explicitCritX = explicitCritRule ? explicitCritRule.value : null;
+  const critCandidates = [innateCritX, explicitCritX].filter((x) => x !== null);
+  const Xcrit = critCandidates.length > 0 ? Math.min(...critCandidates) : null;  
   const Xmurderous = murderousRule ? murderousRule.value : null;
 
   const TIER_SUFFIX = { 0: 'Dplus0', 1: 'Dplus1', 2: 'Dplus2' };
