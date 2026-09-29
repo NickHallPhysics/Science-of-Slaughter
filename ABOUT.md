@@ -24,12 +24,13 @@ decisions.
 Currently, the project has:
 
 * Probabilities for Shooting attacks against Infantry. This can also be used to simulate Volley Attacks as part of the Charge Phase. At this stage, all models are assumed to fire the same weapon.
+* Probabilities for casualties close combat attacks against Infantry. At this stage, all models are assumed to be attacking with the same weapon and have the same base profile (Weapon Skill, Attacks, etc).
 
 Future developments will include:
 
 * Mixed weapons to be incorporated into the shooting vs infantry utility
-* Probabilities for shooting against vehicles
-* Probabilities for casualties close combat attacks against Infantry
+* Probabilities for shooting attacks against vehicles
+* Probabilities for close combat attacks against vehicles
 * Probabilities for outcomes in a Challenge
 * Probabilities for advanced statistics outcome (i.e. statuses, combat outcomes)
 * Comparative capabilities between different weapons, different squad loadouts etc

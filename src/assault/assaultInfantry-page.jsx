@@ -13,9 +13,7 @@ import {
   Tooltip,
 } from 'chart.js';
 import {
-  needForBS, 
-  needForBSSnapShot,
-  getInnateCriticalX,
+  needForWS,
   resolveAttackProbabilities,
   resolveFinalOutcomeProbabilities,
   computeModelsRemovedMultiTier,
@@ -247,11 +245,11 @@ function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove, 
 }
 
 export default function Page() {
-  // firing unit
-  const [bs, bsInput] = useNumericField(4, { min: 1, max: 10 });
-  const [isSnapShot, setIsSnapShot] = useState(false);
-  const [fp, fpInput] = useNumericField(1, { min: 1, max: 20 });
-  const [modelsFiring, modelsFiringInput] = useNumericField(10, { min: 1, max: 100 });
+  // attacking unit
+  const [attackWS, attackWSInput] = useNumericField(4, { min: 1, max: 10 });
+  const [targetWS, targetWSInput] = useNumericField(4, { min: 1, max: 10 });
+  const [attacks, aInput] = useNumericField(1, { min: 1, max: 20 });
+  const [modelsAttacking, modelsAttackingInput] = useNumericField(10, { min: 1, max: 100 });
   const [str, strInput] = useNumericField(4, { min: 1, max: 20 });
   const [ap, setAp] = useState(5);
   const [dmg, dmgInput] = useNumericField(1, { min: 1, max: 20 });
@@ -342,18 +340,20 @@ export default function Page() {
 
   const [modelsView, setModelsView] = useState('distributive'); // 'cumulative' | 'distributive'
   const results = useMemo(() => {
-    const numberShots = fp * modelsFiring;
-    const hitNeed = isSnapShot ? needForBSSnapShot(bs) : needForBS(bs);
-    const innateCritX = isSnapShot ? null : getInnateCriticalX(bs);
+    const hitNeed = needForWS(attackWS, targetWS);
+    const explicitCritRule = activeOffensiveRules.find((r) => r.id === 'criticalHit');
+    const critNeed = explicitCritRule ? explicitCritRule.value : null;
+  
+    const numberShots = attacks * modelsAttacking;
     const { pHit, pWound, wNeed, buckets } =
-      resolveAttackProbabilities(hitNeed, str, tough, innateCritX, activeTraits, activeOffensiveRules, activeDefensiveRules, numberShots);
+      resolveAttackProbabilities(hitNeed, str, tough, null, activeTraits, activeOffensiveRules, activeDefensiveRules, numberShots);
 
     const { pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2, 
       pUnsavedTierDplus0Murderous, pUnsavedTierDplus1Murderous, pUnsavedTierDplus2Murderous,
       saveNormal, saveBreach } =
       resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
 
-    const totalDice = fp * modelsFiring;
+    const totalDice = attacks * modelsAttacking;
     const distHits = binomialPMF(totalDice, pHit);
     const distWounds = propagate(distHits, pWound); // Stage 1/2 display only
 
@@ -391,17 +391,15 @@ export default function Page() {
     }
 
     const cdfModels = cdfAtLeast(distModels);
-    return { hitNeed, pHit, wNeed, saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, 
+    return { hitNeed, pHit, wNeed, critNeed, saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, 
       deflagrateUnsaved, totalDice, distHits, distWounds, distUnsaved, distModels, cdfModels, mitigation };
-    }, [bs, fp, modelsFiring, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, 
-      activeOffensiveRules, activeMitigationRules, activeDefensiveRules, activeTraits, isSnapShot]);
+    }, [attackWS, targetWS, attacks, modelsAttacking, str, ap, dmg, tough, woundsPerModel, modelsTarget, armour, invuln, cover, 
+      activeOffensiveRules, activeMitigationRules, activeDefensiveRules, activeTraits]);
 
-  const { saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, deflagrateUnsaved, hitNeed, totalDice, 
+  const { hitNeed, critNeed, saveNormal, saveBreach, deflagrateRule, deflagrateWoundsCaused, deflagrateUnsaved, totalDice, 
     distHits, distWounds, distUnsaved, distModels, cdfModels, hitsPerKill, mitigation } = results;
 
   const modelsChartDist = modelsView === 'cumulative' ? cdfModels : distModels;
-
-  const critNeed = getEffectiveCriticalThreshold(bs, activeOffensiveRules, isSnapShot);
 
   let saveHint;
   if (saveNormal.saveValue === null) {
@@ -427,53 +425,34 @@ export default function Page() {
       </Link>
 
       <div className="masthead">
-        <p className="eyebrow">Shooting Phase &middot; Infantry vs Infantry</p>
+        <p className="eyebrow">Assault Phase &middot; Infantry vs Infantry</p>
         <h1>Science of Slaughter</h1>
-        <p>Set the firing unit's profile and the target's profile below. Every stage of the attack — hit, wound, save, and casualties removed — is recalculated live as a full probability distribution.</p>
+        <p>Set the attacking unit's profile and the target's profile below. Every stage of the attack — hit, wound, save, and casualties removed — is recalculated live as a full probability distribution.</p>
       </div>
 
       <div className="layout">
         <div className="controls">
 
           <div className="card">
-            <div className="card-head attacker"><span className="dot"></span><span className="tag">Firing Unit</span></div>
+            <div className="card-head attacker"><span className="dot"></span><span className="tag">Attacking Unit</span></div>
             <div className="card-body">
               <div className="subgrid">
                 <div className="field">
-                  <label>Ballistic Skill (BS)</label>
-                  <div className="bs-input-row">
-                    <input {...bsInput} />
-                    <button
-                      type="button"
-                      className={`toggle-btn ${isSnapShot ? 'active' : ''}`}
-                      onClick={() => setIsSnapShot((v) => !v)}
-                    >
-                      Snap Shots
-                    </button>
-                  </div>
-                  <div className="hint">
-                    {isSnapShot
-                      ? (hitNeed > 6
-                          ? 'Automatic Fail (Snap Shot)'
-                          : critNeed !== null
-                            ? `Snap Shot: needs ${hitNeed}+ to hit, needs ${critNeed}+ to Critical Hit`
-                            : `Snap Shot: needs ${hitNeed}+ to hit`)
-                      : bs >= 10
-                        ? (critNeed !== null ? 'Automatic hit, automatic Critical Hit' : 'Automatic hit')
-                        : critNeed !== null
-                          ? `Needs ${hitNeed}+ to hit, needs ${critNeed}+ to Critical Hit`
-                          : `Needs ${hitNeed}+ to hit`}
-                  </div>
+                  <label>Weapon Skill (WS)</label>
+                  <input {...attackWSInput} />
+                </div>
+                <div className="hint">
+                  {`Needs ${hitNeed}+ to hit` + (critNeed !== null ? `, needs ${critNeed}+ to Critical Hit` : '')}
                 </div>
               </div>
               <div className="subgrid">
                 <div className="field">
-                  <label>Firepower (FP)</label>
-                  <input {...fpInput} />
+                  <label>Attacks (A)</label>
+                  <input {...aInput} />
                 </div>
                 <div className="field">
-                  <label>Models Firing</label>
-                  <input {...modelsFiringInput} />
+                  <label>Models Attacking</label>
+                  <input {...modelsAttackingInput} />
                 </div>
               </div>
               <div className="divider-label">Weapon Profile</div>
@@ -502,7 +481,7 @@ export default function Page() {
                     onAdd={addRule}
                     onUpdate={updateRuleValue}
                     onRemove={removeRule}
-                    currentPhase="shooting_infantry"
+                    currentPhase="assault_infantry"
                   />
                 <div className="divider-label">Traits</div>
                   <SpecialRuleList
@@ -511,7 +490,7 @@ export default function Page() {
                     onAdd={addRule}
                     onUpdate={updateRuleValue}
                     onRemove={removeRule}
-                    currentPhase="shooting_infantry"
+                    currentPhase="assault_infantry"
                   />
               </div>
             </div>
@@ -519,6 +498,12 @@ export default function Page() {
           <div className="card">
             <div className="card-head defender"><span className="dot"></span><span className="tag">Target Unit</span></div>
             <div className="card-body">
+              <div className="subgrid">
+                <div className="field">
+                  <label>Weapon Skill (WS)</label>
+                  <input {...targetWSInput} />
+                </div>
+              </div>
               <div className="subgrid">
                 <div className="field">
                   <label>Toughness (T)</label>
@@ -563,7 +548,7 @@ export default function Page() {
                   onAdd={addRule}
                   onUpdate={updateRuleValue}
                   onRemove={removeRule}
-                  currentPhase="shooting_infantry"
+                  currentPhase="assault_infantry"
                 />
               <div className="hint">{mitigationHint}</div>
               <div className="divider-label">Special Rules</div>
@@ -573,7 +558,7 @@ export default function Page() {
                   onAdd={addRule}
                   onUpdate={updateRuleValue}
                   onRemove={removeRule}
-                  currentPhase="shooting_infantry"
+                  currentPhase="assault_infantry"
                 />
             </div>
           </div>

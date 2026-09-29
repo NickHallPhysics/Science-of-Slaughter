@@ -5,6 +5,7 @@ export const DAMAGE_MITIGATION_DEFINITIONS = [
     valueLabel: 'X',
     options: [2, 3, 4, 5, 6],
     defaultValue: 5,
+    phaseApplicable: ['shooting_infantry',],
     description: 'After a wound fails its Saving Throw, roll an additional D6: a result ≥ X ignores the wound entirely.',
   },
   {
@@ -13,15 +14,17 @@ export const DAMAGE_MITIGATION_DEFINITIONS = [
     valueLabel: 'X',
     options: [2, 3, 4, 5, 6],
     defaultValue: 5,
+    phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'After a wound fails its Saving Throw, roll an additional D6: a result ≥ X ignores the wound entirely.',
   },
   {
-  id: 'medic',
-  label: 'Medic',
-  valueLabel: 'X',
-  options: [2, 3, 4, 5, 6],
-  defaultValue: 4,
-  description: 'The first time a Model is allocated one or more Unsaved Wounds, it makes a Recovery Test (roll ≥ X to pass). On a pass, one of the Unsaved wounds allocated to the model is reduced by 1 Damage (to a minimum of 0).',
+    id: 'medic',
+    label: 'Medic',
+    valueLabel: 'X',
+    options: [2, 3, 4, 5, 6],
+    defaultValue: 4,
+    phaseApplicable: ['shooting_infantry',],
+    description: 'The first time a Model is allocated one or more Unsaved Wounds, it makes a Recovery Test (roll ≥ X to pass). On a pass, one of the Unsaved wounds allocated to the model is reduced by 1 Damage (to a minimum of 0).',
   }
   // future rules go here, e.g.:
   // { id: 'specialrule', label: 'Special Rule', valueLabel: 'X', options: [4,5,6], defaultValue: 5 },

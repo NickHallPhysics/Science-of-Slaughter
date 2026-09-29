@@ -13,6 +13,13 @@ const PHASES = [
     enabled: true,
   },
   {
+    id: 'assault',
+    label: 'Assault Phase - vs Infantry',
+    path: '/assaultInfantry',
+    description: 'Hit, wound, save, and casualty probabilities for close combat attacks against Infantry in the Fight Sub-Phase.',
+    enabled: true,
+  },
+  {
     id: 'shootingVehicles',
     label: 'Shooting Phase - vs Vehicles',
     path: '/shootingVehicles',
@@ -24,13 +31,6 @@ const PHASES = [
     label: 'Challenge Sub-Phase',
     path: '/challenge',
     description: 'Hit, wound, and save for challenges between champions.',
-    enabled: false,
-  },
-  {
-    id: 'assault',
-    label: 'Assault Phase',
-    path: '/assault',
-    description: 'Hit, wound, save, and casualty probabilities for close combat attacks in the Fight Sub-Phase.',
     enabled: false,
   },
 ];
@@ -46,7 +46,9 @@ export default function HomePage() {
         <p className="landing-eyebrow">A Combat Probability Toolkit</p>
         <h1 className="landing-banner">Science of Slaughter</h1>
         <p className="landing-subtitle">
-          Exact probability distributions for every phase of tabletop combat — no dice, no guesswork, just the maths.
+          Probability distributions for every phase for the 3rd Edition of the Horus 
+          Heresy to help you make decisions with the tactical insight of one of the 
+          tech-savants of the Mechanicum.
         </p>
 
         <div className="landing-buttons">
