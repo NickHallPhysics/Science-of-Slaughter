@@ -184,61 +184,63 @@ export function getEffectiveCriticalThreshold(bs, activeOffensiveRules = [], isS
  * All bucket values are ABSOLUTE probabilities (already include pHit), not
  * conditional on a hit.
  */
-export function resolveAttackProbabilities(hitNeed, S, T, innateCritX, activeTraits=[], 
-  activeOffensiveRules = [], activeDefensiveRules = [], numberShots=1) {
-
-  const ironHandsRule = activeDefensiveRules.find((r) => r.id === 'ironHands');
-  const effS = ironHandsRule ? Math.max(1, S-ironHandsRule.value) : S;
-  const wNeed = needForWound(effS, T);
-
+export function resolveAttackProbabilities(hitNeed, S, T, innateCritX = null, activeTraits = [], activeOffensiveRules = [], activeDefensiveRules = [], numberShots = 0) {
   const rendingRule = activeOffensiveRules.find((r) => r.id === 'rending');
   const poisonedRule = activeOffensiveRules.find((r) => r.id === 'poisoned');
   const breachingRule = activeOffensiveRules.find((r) => r.id === 'breaching');
   const shredRule = activeOffensiveRules.find((r) => r.id === 'shred');
   const murderousRule = activeOffensiveRules.find((r) => r.id === 'murderous');
+  const bypassRule = activeOffensiveRules.find((r) => r.id === 'bypass');
+
+  const ironHandsRule = activeDefensiveRules.find((r) => r.id === 'ironHands');
+  const effS = ironHandsRule ? Math.max(1, S - ironHandsRule.value) : S;
+  const wNeed = needForWound(effS, T);
 
   const salamandersRule = activeDefensiveRules.find((r) => r.id === 'salamanders');
+  const salamandersThreshold = salamandersRule ? salamandersRule.value : 2;
 
   const poisonThreshold = poisonedRule ? poisonedRule.value : 7;
-  const salamandersThreshold = salamandersRule ? salamandersRule.value : 2;
   const wThreshold = wNeed === null ? 7 : wNeed;
-  const effWThreshold = Math.max(salamandersThreshold, Math.min(wThreshold, poisonThreshold)); // effective wound-success threshold (real die)
+  const m = Math.max(salamandersThreshold, Math.min(wThreshold, poisonThreshold));
+
   const Xbreach = breachingRule ? breachingRule.value : null;
   const Xshred = shredRule ? shredRule.value : null;
   const Xrend = rendingRule ? rendingRule.value : null;
+  const Xmurderous = murderousRule ? murderousRule.value : null;
+  const Xbypass = bypassRule ? bypassRule.value : null;
+
   const explicitCritRule = activeOffensiveRules.find((r) => r.id === 'criticalHit');
   const explicitCritX = explicitCritRule ? explicitCritRule.value : null;
   const critCandidates = [innateCritX, explicitCritX].filter((x) => x !== null);
-  const Xcrit = critCandidates.length > 0 ? Math.min(...critCandidates) : null;  
-  const Xmurderous = murderousRule ? murderousRule.value : null;
+  const Xcrit = critCandidates.length > 0 ? Math.min(...critCandidates) : null;
 
-  const TIER_SUFFIX = { 0: 'Dplus0', 1: 'Dplus1', 2: 'Dplus2' };
-  const buckets = {};
-  for (const suf of Object.values(TIER_SUFFIX)) {
-    buckets['Breach' + suf] = 0;
-    buckets['noBreach' + suf] = 0;
-    buckets['Breach' + suf + 'Murderous'] = 0;   // subset of BreachDplusN that's also Murderous
-    buckets['noBreach' + suf + 'Murderous'] = 0;
+  // Records replace the old flat 24-key bucket object. Each record is a
+  // fully-classified, non-overlapping slice of wound probability: which
+  // damage tier it belongs to, whether it breached, and which special
+  // conditions apply to it ('murderous' and/or 'bypass' currently — a
+  // future rule just means pushing another string into `flags`, no change
+  // to this accumulation logic or the bucket structure itself).
+  const recordMap = new Map();
+  function accumulate(breach, dmgTier, flags, prob) {
+    const key = breach + '|' + dmgTier + '|' + [...flags].sort().join(',');
+    const existing = recordMap.get(key);
+    if (existing) existing.prob += prob;
+    else recordMap.set(key, { breach, dmgTier, flags: [...flags], prob });
   }
 
-  const addWound = (breach, dmgBonus, murderous, prob) => {
-    const suf = TIER_SUFFIX[dmgBonus];
-    const key = (breach ? 'Breach' : 'noBreach') + suf;
-    buckets[key] += prob;
-    if (murderous) buckets[key + 'Murderous'] += prob;
-  };
-
   const classifyWoundDie = (d2) => {
-    if (d2 < effWThreshold) return null;
+    if (d2 < m) return null;
     const breach = Xbreach !== null && d2 >= Xbreach;
     const shred = Xshred !== null && d2 >= Xshred;
     const murderous = Xmurderous !== null && d2 >= Xmurderous;
-    return { breach, shred, murderous };
+    const bypass = Xbypass !== null && d2 >= Xbypass;
+    return { breach, shred, murderous, bypass };
   };
 
   let pHit;
 
   if (hitNeed === null) {
+    // BS10-style automatic hit: hit die assumed to be a natural 6.
     pHit = 1;
     const isRending = !!rendingRule;
     const isCritical = Xcrit !== null;
@@ -246,28 +248,35 @@ export function resolveAttackProbabilities(hitNeed, S, T, innateCritX, activeTra
     if (forcedSix) {
       const breach = !!breachingRule;
       const shred = !!shredRule;
-      const murderous = Xmurderous !== null; // forced six always satisfies any X <= 6
-      addWound(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), murderous, 1);
+      const flags = [];
+      if (Xmurderous !== null) flags.push('murderous');
+      if (Xbypass !== null) flags.push('bypass');
+      accumulate(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), flags, 1);
     } else {
       for (let d2 = 1; d2 <= 6; d2++) {
         const res = classifyWoundDie(d2);
         if (!res) continue;
-        addWound(res.breach, res.shred ? 1 : 0, res.murderous, 1 / 6);
+        const flags = [];
+        if (res.murderous) flags.push('murderous');
+        if (res.bypass) flags.push('bypass');
+        accumulate(res.breach, res.shred ? 1 : 0, flags, 1 / 6);
       }
     }
   } else {
     const candidateThresholds = [hitNeed];
     if (Xrend !== null) candidateThresholds.push(Xrend);
     if (Xcrit !== null) candidateThresholds.push(Xcrit);
+
     const imperialFistsRule = activeOffensiveRules.find((r) => r.id === 'imperialFists');
     if (imperialFistsRule) {
-      if (activeTraits.find(r=> imperialFistsRule.traits.includes(r.id)) && numberShots >= 5) {
-          if (hitNeed < 7 && hitNeed > 2 && hitNeed != null) {
-            const modHitNeed = hitNeed - imperialFistsRule.value
-            candidateThresholds.push(modHitNeed);
-          }
+      if (activeTraits.find((r) => imperialFistsRule.traits.includes(r.id)) && numberShots >= 5) {
+        if (hitNeed < 7 && hitNeed > 2 && hitNeed != null) {
+          const modHitNeed = hitNeed - imperialFistsRule.value;
+          candidateThresholds.push(modHitNeed);
         }
       }
+    }
+
     const effHitNeed = Math.min(...candidateThresholds);
     pHit = pFromNeed(effHitNeed);
 
@@ -278,21 +287,25 @@ export function resolveAttackProbabilities(hitNeed, S, T, innateCritX, activeTra
       if (forcedSix) {
         const breach = !!breachingRule;
         const shred = !!shredRule;
-        const murderous = Xmurderous !== null;
-        addWound(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), murderous, 1 / 6);
+        const flags = [];
+        if (Xmurderous !== null) flags.push('murderous');
+        if (Xbypass !== null) flags.push('bypass');
+        accumulate(breach, (isCritical ? 1 : 0) + (shred ? 1 : 0), flags, 1 / 6);
       } else {
         for (let d2 = 1; d2 <= 6; d2++) {
           const res = classifyWoundDie(d2);
           if (!res) continue;
-          addWound(res.breach, res.shred ? 1 : 0, res.murderous, (1 / 6) * (1 / 6));
+          const flags = [];
+          if (res.murderous) flags.push('murderous');
+          if (res.bypass) flags.push('bypass');
+          accumulate(res.breach, res.shred ? 1 : 0, flags, (1 / 6) * (1 / 6));
         }
       }
     }
   }
 
-  // sum only the 6 BASE keys — the *Murderous keys are subsets, summing them too would double-count
-  const baseKeys = ['BreachDplus0', 'BreachDplus1', 'BreachDplus2', 'noBreachDplus0', 'noBreachDplus1', 'noBreachDplus2'];
-  const pWoundAbsolute = baseKeys.reduce((sum, k) => sum + buckets[k], 0);
+  const buckets = [...recordMap.values()];
+  const pWoundAbsolute = buckets.reduce((sum, rec) => sum + rec.prob, 0);
   const pWound = pHit > 0 ? pWoundAbsolute / pHit : 0;
 
   return { pHit, pWound, hitNeed, wNeed, buckets };
@@ -319,20 +332,37 @@ export function resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, co
   const saveNormal = resolveSave(ap, armour, invuln, cover);
   const saveBreach = resolveSave(2, armour, invuln, cover);
 
-  const pUnsavedTierDplus0 = buckets.BreachDplus0 * saveBreach.pUnsaved + buckets.noBreachDplus0 * saveNormal.pUnsaved;
-  const pUnsavedTierDplus1 = buckets.BreachDplus1 * saveBreach.pUnsaved + buckets.noBreachDplus1 * saveNormal.pUnsaved;
-  const pUnsavedTierDplus2 = buckets.BreachDplus2 * saveBreach.pUnsaved + buckets.noBreachDplus2 * saveNormal.pUnsaved;
+  // Sums the unsaved probability of every record matching `predicate`.
+  // Bypass records skip the save roll entirely; everything else uses
+  // whichever save its breach status calls for.
+  function sumUnsaved(predicate, { includeBypass = true, includeNormal = true } = {}) {
+    let total = 0;
+    for (const rec of buckets) {
+      if (!predicate(rec)) continue;
+      const isBypass = rec.flags.includes('bypass');
+      if (isBypass && !includeBypass) continue;
+      if (!isBypass && !includeNormal) continue;
+      if (isBypass) total += rec.prob;
+      else {
+        const save = rec.breach ? saveBreach : saveNormal;
+        total += rec.prob * save.pUnsaved;
+      }
+    }
+    return total;
+  }
 
-  // Murderous-specific subset of each tier above — these wounds are immune to Eternal Warrior.
-  const pUnsavedTierDplus0Murderous = buckets.BreachDplus0Murderous * saveBreach.pUnsaved + buckets.noBreachDplus0Murderous * saveNormal.pUnsaved;
-  const pUnsavedTierDplus1Murderous = buckets.BreachDplus1Murderous * saveBreach.pUnsaved + buckets.noBreachDplus1Murderous * saveNormal.pUnsaved;
-  const pUnsavedTierDplus2Murderous = buckets.BreachDplus2Murderous * saveBreach.pUnsaved + buckets.noBreachDplus2Murderous * saveNormal.pUnsaved;
-
-  return {
-    pUnsavedTierDplus0, pUnsavedTierDplus1, pUnsavedTierDplus2,
-    pUnsavedTierDplus0Murderous, pUnsavedTierDplus1Murderous, pUnsavedTierDplus2Murderous,
-    saveNormal, saveBreach,
-  };
+  const result = { saveNormal, saveBreach };
+  for (let tier = 0; tier <= 2; tier++) {
+    const isMurd = (r) => r.flags.includes('murderous');
+    // pUnsavedTierDplusN is INCLUSIVE of the murderous subset — matches the
+    // original contract from when Murderous was first added; callers derive
+    // the exclusive non-murderous portion themselves via subtraction.
+    result[`pUnsavedTierDplus${tier}`] = sumUnsaved((r) => r.dmgTier === tier, { includeBypass: false });
+    result[`pUnsavedTierDplus${tier}Murderous`] = sumUnsaved((r) => r.dmgTier === tier && isMurd(r), { includeBypass: false });
+    result[`pBypassTierDplus${tier}`] = sumUnsaved((r) => r.dmgTier === tier && !isMurd(r), { includeNormal: false });
+    result[`pBypassTierDplus${tier}Murderous`] = sumUnsaved((r) => r.dmgTier === tier && isMurd(r), { includeNormal: false });
+  }
+  return result;
 }
 
 /**
@@ -669,4 +699,21 @@ export function resolveDamageMitigation(activeMitigationRules = []) {
     return { mitigationValue: best.value, ruleId: 'medic', pMitigate: 0, pMitigationFail: 1, pMedic: pSuccess };
   }
   return { mitigationValue: best.value, ruleId: best.id, pMitigate: pSuccess, pMitigationFail: 1 - pSuccess, pMedic: 0 };
+}
+
+/**
+ * Testing/debugging helper: translates an OLD-style flat bucket key name
+ * (e.g. "BreachDplus1Murderous") into a query against the new array-of-
+ * records bucket structure, and sums the matching probability. Lets tests
+ * written against the old bucket shape be converted mechanically.
+ */
+export function sumBucket(buckets, keyName) {
+  const match = keyName.match(/^(Breach|noBreach)Dplus(\d)(Murderous)?$/);
+  if (!match) throw new Error(`sumBucket: cannot parse key "${keyName}"`);
+  const breach = match[1] === 'Breach';
+  const dmgTier = parseInt(match[2], 10);
+  const requireMurderous = !!match[3];
+  return buckets
+    .filter((r) => r.breach === breach && r.dmgTier === dmgTier && (!requireMurderous || r.flags.includes('murderous')))
+    .reduce((sum, r) => sum + r.prob, 0);
 }

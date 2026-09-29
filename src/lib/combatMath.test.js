@@ -3,12 +3,14 @@ import {
   needForBS,
   needForBSSnapShot,
   getEffectiveCriticalThreshold,
+  getInnateCriticalX,
   needForWS,
   pFromNeed,
   needForWound,
   resolveSave,
   resolveAttackProbabilities,
   resolveFinalOutcomeProbabilities,
+  sumBucket,
   computeModelsRemoved,
   computeModelsRemovedWithFireGroups,
   computeModelsRemovedMultiTier,
@@ -121,18 +123,18 @@ describe('resolveAttackProbabilities — decoupled hitNeed/innateCritX (regressi
     const innateCritX = getInnateCriticalX(bs);
     const r = resolveAttackProbabilities(hitNeed, 1, 20, innateCritX, [], [], [], 1);
     expect(r.pHit).toBeCloseTo(5 / 6, 9);
-    const tier1 = r.buckets.BreachDplus1 + r.buckets.noBreachDplus1;
+    const tier1 = sumBucket(r.buckets, 'BreachDplus1') + sumBucket(r.buckets, 'noBreachDplus1');
     expect(tier1).toBeCloseTo(4 / 6, 9); // innate crit still applies via the passed-in value
   });
 
   it('assault: no innate crit, only an explicit rule grants Critical Hit', () => {
     const hitNeed = needForWS(8, 4); // 2+
     const withoutExplicit = resolveAttackProbabilities(hitNeed, 1, 20, null, [], [], [], 1);
-    const tier1 = withoutExplicit.buckets.BreachDplus1 + withoutExplicit.buckets.noBreachDplus1;
+    const tier1 = sumBucket(withoutExplicit.buckets, 'BreachDplus1') + sumBucket(withoutExplicit.buckets, 'noBreachDplus1');
     expect(tier1).toBeCloseTo(0, 9);
 
     const withExplicit = resolveAttackProbabilities(hitNeed, 1, 20, null, [], [{ id: 'criticalHit', value: 5 }], [], 1);
-    const tier1b = withExplicit.buckets.BreachDplus1 + withExplicit.buckets.noBreachDplus1;
+    const tier1b = sumBucket(withExplicit.buckets, 'BreachDplus1') + sumBucket(withExplicit.buckets, 'noBreachDplus1');
     expect(tier1b).toBeGreaterThan(0);
   });
 
@@ -160,7 +162,7 @@ describe('resolveFinalOutcomeProbabilities — core breach/save combination', ()
         expectedUnsaved += (1 / 36) * save.pUnsaved;
       }
     }
-    const { buckets } = resolveAttackProbabilities(bs, S, T, false, [], [{ id: 'breaching', value: X }]);
+    const { buckets } = resolveAttackProbabilities(hitNeed, S, T, null, [], [{ id: 'breaching', value: X }]);
     const outcome = resolveFinalOutcomeProbabilities(buckets, ap, armour, invuln, cover);
     const totalUnsaved = outcome.pUnsavedTierDplus0 + outcome.pUnsavedTierDplus1 + outcome.pUnsavedTierDplus2;
     expect(totalUnsaved).toBeCloseTo(expectedUnsaved, 9);
@@ -171,16 +173,16 @@ describe('resolveFinalOutcomeProbabilities — core breach/save combination', ()
     // AP6 is "weak" enough that armour would normally still apply (saveNormal).
     // The breach override forces AP2 regardless, which is NOT enough to exceed armour=3,
     // so armour gets negated under breach even though the weapon's real AP wouldn't have.
-    const { buckets } = resolveAttackProbabilities(4, 6, 4, false, [], [{ id: 'breaching', value: 2 }]); // every wound breaches
+    const { buckets } = resolveAttackProbabilities(needForBS(4), 6, 4, getInnateCriticalX(4), [], [{ id: 'breaching', value: 2 }]); // every wound breaches
     const outcome = resolveFinalOutcomeProbabilities(buckets, 6, 3, 7, 7);
     expect(outcome.saveNormal.armourUsable).toBe(true);  // real AP6 > armour3: armour normally applies
     expect(outcome.saveBreach.armourUsable).toBe(false); // breach's fixed AP2 does not exceed armour3
   });
 
   it('with no Breaching active, every wound uses the normal save only', () => {
-    const { buckets } = resolveAttackProbabilities(4, 4, 4, false, [], []);
+    const { buckets } = resolveAttackProbabilities(needForBS(4), 4, 4, getInnateCriticalX(4), [], []);
     const outcome = resolveFinalOutcomeProbabilities(buckets, 1, 4, 7, 7);
-    const totalBreachBucketMass = buckets.BreachDplus0 + buckets.BreachDplus1 + buckets.BreachDplus2;
+    const totalBreachBucketMass = sumBucket(buckets, 'BreachDplus0') + sumBucket(buckets, 'BreachDplus1') + sumBucket(buckets, 'BreachDplus2');
     expect(totalBreachBucketMass).toBeCloseTo(0, 9);
   });
 });
@@ -559,44 +561,44 @@ describe('getEffectiveCriticalThreshold — Snap Shot suppression', () => {
 
 describe('resolveAttackProbabilities — Snap Shot', () => {
   it('BS1 is Automatic Fail: pHit = 0 with no other rules active', () => {
-    const r = resolveAttackProbabilities(1, 4, 4, true, [], [], [], 1);
+    const r = resolveAttackProbabilities(needForBSSnapShot(1), 4, 4, null, [], [], [], 1);
     expect(r.pHit).toBe(0);
   });
 
   it('BS10 no longer auto-hits under Snap Shot — needs an actual 2+', () => {
-    const normal = resolveAttackProbabilities(10, 4, 4, false, [], [], [], 1);
-    const snap = resolveAttackProbabilities(10, 4, 4, true, [], [], [], 1);
+    const normal = resolveAttackProbabilities(needForBS(10), 4, 4, getInnateCriticalX(10), [], [], [], 1);
+    const snap = resolveAttackProbabilities(needForBSSnapShot(10), 4, 4, null, [], [], [], 1);
     expect(normal.pHit).toBe(1); // unaffected, real auto-hit
     expect(snap.pHit).toBeCloseTo(5 / 6, 9);
   });
 
   it('matches the full needForBSSnapShot table when no other rules are active', () => {
     for (let bs = 1; bs <= 10; bs++) {
-      const r = resolveAttackProbabilities(bs, 4, 4, true, [], [], [], 1);
+      const r = resolveAttackProbabilities(needForBSSnapShot(bs), 4, 4, null, [], [], [], 1);
       const expected = pFromNeed(needForBSSnapShot(bs));
       expect(r.pHit).toBeCloseTo(expected, 9);
     }
   });
 
   it('suppresses the innate Critical Hit from high BS, but an explicit rule still works', () => {
-    const withoutExplicit = resolveAttackProbabilities(9, 1, 20, true, [], [], [], 1);
-    const tier1_a = withoutExplicit.buckets.BreachDplus1 + withoutExplicit.buckets.noBreachDplus1;
+    const withoutExplicit = resolveAttackProbabilities(needForBSSnapShot(9), 1, 20, null, [], [], [], 1);
+    const tier1_a = sumBucket(withoutExplicit.buckets, 'BreachDplus1') + sumBucket(withoutExplicit.buckets, 'noBreachDplus1');
     expect(tier1_a).toBeCloseTo(0, 9);
 
-    const withExplicit = resolveAttackProbabilities(9, 1, 20, true, [], [{ id: 'criticalHit', value: 5 }], [], 1);
-    const tier1_b = withExplicit.buckets.BreachDplus1 + withExplicit.buckets.noBreachDplus1;
+    const withExplicit = resolveAttackProbabilities(needForBSSnapShot(9), 1, 20, null, [], [{ id: 'criticalHit', value: 5 }], [], 1);
+    const tier1_b = sumBucket(withExplicit.buckets, 'BreachDplus1') + sumBucket(withExplicit.buckets, 'noBreachDplus1');
     expect(tier1_b).toBeGreaterThan(0);
   });
 
   it('a weapon\'s own Rending still functions even during an Automatic Fail (BS1)', () => {
-    const withRending = resolveAttackProbabilities(1, 4, 4, true, [], [{ id: 'rending', value: 4 }], [], 1);
+    const withRending = resolveAttackProbabilities(needForBSSnapShot(1), 4, 4, null, [], [{ id: 'rending', value: 4 }], [], 1);
     expect(withRending.pHit).toBeCloseTo(0.5, 9); // Rending overrides the impossible BS threshold
-    const withoutRending = resolveAttackProbabilities(1, 4, 4, true, [], [], [], 1);
+    const withoutRending = resolveAttackProbabilities(needForBSSnapShot(1), 4, 4, null, [], [], [], 1);
     expect(withoutRending.pHit).toBe(0); // true Automatic Fail, no weapon-level rescue
   });
 
   it('isSnapShot=false exactly matches non-Snap-Shot behaviour (regression)', () => {
-    const snapFalse = resolveAttackProbabilities(4, 6, 4, false, [], [{ id: 'rending', value: 5 }], [], 1);
+    const snapFalse = resolveAttackProbabilities(needForBS(4), 6, 4, getInnateCriticalX(4), [], [{ id: 'rending', value: 5 }], [], 1);
     expect(snapFalse.pHit).toBeCloseTo(4 / 6, 9);
   });
 });
