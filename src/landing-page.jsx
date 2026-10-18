@@ -24,7 +24,7 @@ const PHASES = [
     label: 'Shooting Phase - vs Vehicles',
     path: '/shootingVehicles',
     description: 'Hit, wound, save, and casualty probabilities for ranged attacks against Vehicles in the Attack Sub-Phase.',
-    enabled: false,
+    enabled: true,
   },
   {
     id: 'challenge',

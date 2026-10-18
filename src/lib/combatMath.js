@@ -717,3 +717,206 @@ export function sumBucket(buckets, keyName) {
     .filter((r) => r.breach === breach && r.dmgTier === dmgTier && (!requireMurderous || r.flags.includes('murderous')))
     .reduce((sum, r) => sum + r.prob, 0);
 }
+
+// ============================================================
+// Vehicle shooting support — append to combatMath.js
+//
+// Rule 4: vehicles are hit as per normal shooting attacks, but the wound
+// step is replaced entirely by an Armour Penetration test (d6 + Strength
+// vs Armour Value). Per rule 8, Rending, Breaching, Poisoned, Medic,
+// Shred, Murderous, Bypass, Salamanders, Iron Hands, and Eternal Warrior
+// all have no effect on Vehicles — this is reflected by simply never
+// referencing those rule ids below, rather than special-casing an
+// exclusion. Critical Hit still lowers the hit threshold as normal, but
+// no longer forces an automatic wound: it still requires a genuine
+// Armour Penetration test, only adding +1 Damage if that test penetrates.
+// ============================================================
+
+/**
+ * Resolves hit and Armour Penetration probabilities for a shooting attack
+ * against a Vehicle. Returns ABSOLUTE (pre-save) probabilities: pGlance
+ * (Glancing Hit), pPenetrateNormal / pPenetrateCritical (Penetrating Hit,
+ * split by whether +1 Damage applies).
+ */
+export function resolveVehicleAttackProbabilities(hitNeed, S, AV, innateCritX = null, activeTraits = [], activeOffensiveRules = [], numberShots = 0) {
+  const explicitCritRule = activeOffensiveRules.find((r) => r.id === 'criticalHit');
+  const explicitCritX = explicitCritRule ? explicitCritRule.value : null;
+  const critCandidates = [innateCritX, explicitCritX].filter((x) => x !== null);
+  const Xcrit = critCandidates.length > 0 ? Math.min(...critCandidates) : null;
+
+  let pHit, pCriticalHit, pNormalHit;
+
+  if (hitNeed === null) {
+    // automatic hit (e.g. BS10): natural roll assumed to be a 6
+    pHit = 1;
+    const isCritical = Xcrit !== null; // a natural 6 always satisfies any Xcrit <= 6
+    pCriticalHit = isCritical ? 1 : 0;
+    pNormalHit = isCritical ? 0 : 1;
+  } else {
+    const candidateThresholds = [hitNeed];
+    if (Xcrit !== null) candidateThresholds.push(Xcrit);
+
+    const imperialFistsRule = activeOffensiveRules.find((r) => r.id === 'imperialFists');
+    if (imperialFistsRule) {
+      if (activeTraits.find((r) => imperialFistsRule.traits.includes(r.id)) && numberShots >= 5) {
+        if (hitNeed < 7 && hitNeed > 2 && hitNeed != null) {
+          candidateThresholds.push(hitNeed - imperialFistsRule.value);
+        }
+      }
+    }
+
+    const effHitNeed = Math.min(...candidateThresholds);
+    pHit = pFromNeed(effHitNeed);
+
+    pCriticalHit = 0;
+    pNormalHit = 0;
+    for (let d = effHitNeed; d <= 6; d++) {
+      const isCritical = Xcrit !== null && d >= Xcrit;
+      if (isCritical) pCriticalHit += 1 / 6;
+      else pNormalHit += 1 / 6;
+    }
+  }
+
+  // Armour Penetration test: d6 + S vs AV. Identical for critical and
+  // normal hits — criticality only changes the Damage applied on a
+  // Penetrating Hit, not the test itself. A natural roll of 1 ALWAYS
+  // fails (neither Glances nor Penetrates), even if S+1 would reach AV.
+  const threshold = AV - S; // the die roll that exactly Glances
+  let pGlanceGivenHit, pPenetrateGivenHit;
+  if (threshold > 6) {
+    pGlanceGivenHit = 0; pPenetrateGivenHit = 0; // S+6 < AV: weapon cannot hurt this vehicle at all
+  } else if (threshold < 2) {
+    // AV < S+2: every roll of 2-6 already exceeds AV. A Glance would need a
+    // roll of 1 (threshold === 1), which always fails, so Glancing is
+    // impossible and only the roll of 1 is lost: 5/6, not 6/6.
+    pGlanceGivenHit = 0; pPenetrateGivenHit = 5 / 6;
+  } else {
+    pGlanceGivenHit = 1 / 6;
+    pPenetrateGivenHit = (6 - threshold) / 6;
+  }
+
+  return {
+    pHit, hitNeed,
+    pGlance: pHit * pGlanceGivenHit,
+    pPenetrateNormal: pNormalHit * pPenetrateGivenHit,
+    pPenetrateCritical: pCriticalHit * pPenetrateGivenHit,
+  };
+}
+
+/**
+ * Applies Invulnerable/Cover Saves and Damage Mitigation to a vehicle's
+ * raw Glance/Penetrate probabilities. Vehicles cannot take Armour Saves
+ * (rule 7) — represented by always passing armour=7 ("None") to the
+ * shared resolveSave helper, so an Armour Save can never be chosen
+ * regardless of the weapon's AP (which has no meaning for vehicles).
+ */
+export function resolveVehicleFinalOutcomeProbabilities(pGlance, pPenetrateNormal, pPenetrateCritical, invuln, cover, pMitigationFail) {
+  const save = resolveSave(0, 7, invuln, cover);
+  const factor = save.pUnsaved * pMitigationFail;
+  return {
+    save,
+    pGlanceUnsaved: pGlance * factor,
+    pPenetrateNormalUnsaved: pPenetrateNormal * factor,
+    pPenetrateCriticalUnsaved: pPenetrateCritical * factor,
+  };
+}
+
+function _trinomialStatusDistribution(g) {
+  const results = [];
+  function fact(n) { let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; }
+  for (let c1 = 0; c1 <= g; c1++) {
+    for (let c2 = 0; c2 <= g - c1; c2++) {
+      const c3 = g - c1 - c2;
+      const coeff = fact(g) / (fact(c1) * fact(c2) * fact(c3));
+      results.push({ c1, c2, c3, p: coeff * Math.pow(1 / 3, g) });
+    }
+  }
+  return results;
+}
+
+const _escalationCache = new Map();
+
+/**
+ * Distribution of Hull Points lost to Vehicle Damage Table escalation
+ * (rule 5: a repeated Status result instead removes 1 Hull Point, no
+ * save or mitigation applies) given exactly `g` Glancing Hits. The order
+ * the Glancing Hits occur in doesn't matter — only whether each status
+ * was rolled at least once — so this reduces to a trinomial distribution
+ * over (Stunned-count, Pinned-count, Suppressed-count), each an exact
+ * 1/3 share per Glancing Hit. Memoized since many callers share the same g.
+ */
+export function resolveEscalationHPDistribution(g) {
+  if (_escalationCache.has(g)) return _escalationCache.get(g);
+  const dist = new Map();
+  for (const { c1, c2, c3, p } of _trinomialStatusDistribution(g)) {
+    const hp = Math.max(0, c1 - 1) + Math.max(0, c2 - 1) + Math.max(0, c3 - 1);
+    dist.set(hp, (dist.get(hp) || 0) + p);
+  }
+  _escalationCache.set(g, dist);
+  return dist;
+}
+
+function _buildVehicleOutcomeJoint(totalDice, pGlance, pPenetrateNormal, pPenetrateCritical) {
+  const distGlance = binomialPMF(totalDice, pGlance);
+  const joint = [];
+  for (let g = 0; g <= totalDice; g++) {
+    const pg = distGlance[g];
+    if (pg <= 1e-14) continue;
+    const remaining = totalDice - g;
+    const massRemaining = 1 - pGlance;
+    const pNormalGivenRemaining = massRemaining > 0 ? pPenetrateNormal / massRemaining : 0;
+    const distNormal = binomialPMF(remaining, pNormalGivenRemaining);
+    for (let pn = 0; pn <= remaining; pn++) {
+      const ppn = distNormal[pn];
+      if (ppn <= 1e-14) continue;
+      const remaining2 = remaining - pn;
+      const massRemaining2 = massRemaining - pPenetrateNormal;
+      const pCritGivenRemaining2 = massRemaining2 > 0 ? pPenetrateCritical / massRemaining2 : 0;
+      const distCrit = binomialPMF(remaining2, pCritGivenRemaining2);
+      for (let pc = 0; pc <= remaining2; pc++) {
+        const ppc = distCrit[pc];
+        if (ppc <= 1e-14) continue;
+        joint.push({ g, pn, pc, prob: pg * ppn * ppc });
+      }
+    }
+  }
+  return joint;
+}
+
+/**
+ * Exact distribution of total Hull Points lost for a shooting attack
+ * against a Vehicle, combining Penetrating Hit damage (dmg, or dmg+1 for
+ * a Critical Hit's Penetrating result) with Vehicle Damage Table
+ * escalation Hull Point loss, capped at the Vehicle's total Hull Points
+ * (once destroyed, further damage is wasted — same convention as
+ * infantry casualties never exceeding the unit's model count).
+ */
+export function computeVehicleHullPointDistribution(totalDice, pGlanceUnsaved, pPenetrateNormalUnsaved, pPenetrateCriticalUnsaved, dmg, maxHullPoints) {
+  const joint = _buildVehicleOutcomeJoint(totalDice, pGlanceUnsaved, pPenetrateNormalUnsaved, pPenetrateCriticalUnsaved);
+  const distHullPointsLost = new Array(maxHullPoints + 1).fill(0);
+  for (const { g, pn, pc, prob } of joint) {
+    const penetrateHP = pn * dmg + pc * (dmg + 1);
+    const escDist = resolveEscalationHPDistribution(g);
+    for (const [escHP, escP] of escDist.entries()) {
+      const totalHP = Math.min(maxHullPoints, penetrateHP + escHP);
+      distHullPointsLost[totalHP] += prob * escP;
+    }
+  }
+  return distHullPointsLost;
+}
+
+/**
+ * Probability that each Vehicle Damage Table status (Stunned, Pinned,
+ * Suppressed) is inflicted at least once during the attack. By symmetry
+ * (each status has an identical 1/3 chance per Glancing Hit) all three
+ * probabilities are always equal — this isn't a bug, it's a direct
+ * consequence of the Vehicle Damage Table's even 1-2/3-4/5-6 split.
+ */
+export function computeStatusInflictedProbability(totalDice, pGlanceUnsaved) {
+  const distGlance = binomialPMF(totalDice, pGlanceUnsaved);
+  let pInflicted = 0;
+  for (let g = 0; g <= totalDice; g++) {
+    pInflicted += distGlance[g] * (1 - Math.pow(2 / 3, g));
+  }
+  return { stunned: pInflicted, pinned: pInflicted, suppressed: pInflicted };
+}
