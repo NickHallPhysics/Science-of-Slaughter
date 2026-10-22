@@ -10,6 +10,10 @@ import {
   getEffectiveCriticalThreshold,
   applyEternalWarrior,
   applyDeflagrateWave,
+  resolveVehicleAttackProbabilities,
+  computeVehicleHullPointDistribution, 
+  resolveVehicleFinalOutcomeProbabilities, 
+  computeStatusInflictedProbability,
   computeModelsRemovedMultiTier,
   mean,
 } from './combatMath.js';
@@ -504,5 +508,344 @@ describe('resolveAttackProbabilities — Legiones Astartes: Imperial Fists', () 
     const withIF = resolveAttackProbabilities(needForBSSnapShot(4), 4, 4, null, BOLT_TRAIT, [IF_RULE], [], 5);
     expect(withoutIF.pHit).toBeCloseTo(2 / 6, 9); // Snap Shot BS4 needs 5+
     expect(withIF.pHit).toBeCloseTo(3 / 6, 9);    // IF drops it to 4+
+  });
+});
+
+// ============================================================================
+// Vehicle shooting phase, special rules
+//
+// Add these to the existing import list from './combatMath.js'
+// (needForBS, needForBSSnapShot and getInnateCriticalX are already imported there):
+//   resolveVehicleAttackProbabilities,
+//   resolveVehicleFinalOutcomeProbabilities,
+//   computeStatusInflictedProbability,
+//   computeVehicleHullPointDistribution,
+// ============================================================================
+
+describe('resolveVehicleAttackProbabilities — rules that have no effect on Vehicles', () => {
+  it('Rending, Poisoned, Breaching, Shred, Murderous and Bypass change nothing', () => {
+    const infantryOnly = [
+      { id: 'rending', value: 4 },
+      { id: 'poisoned', value: 2 },
+      { id: 'breaching', value: 3 },
+      { id: 'shred', value: 3 },
+      { id: 'murderous', value: 3 },
+      { id: 'bypass', value: 3 },
+    ];
+    const without = resolveVehicleAttackProbabilities(3, 7, 12, null, [], [], 0);
+    const withThem = resolveVehicleAttackProbabilities(3, 7, 12, null, [], infantryOnly, 0);
+    expect(withThem).toEqual(without);
+  });
+});
+
+describe('resolveVehicleAttackProbabilities — Critical Hit', () => {
+  it('still lowers the hit threshold as normal', () => {
+    const without = resolveVehicleAttackProbabilities(4, 12, 10, null, [], [], 0);
+    const withCrit = resolveVehicleAttackProbabilities(4, 12, 10, null, [], [{ id: 'criticalHit', value: 3 }], 0);
+    expect(without.pHit).toBeCloseTo(3 / 6, 9);
+    expect(withCrit.pHit).toBeCloseTo(4 / 6, 9);
+  });
+
+  it('never auto-wounds: a Critical Hit still has to pass the Armour Penetration test', () => {
+    const r = resolveVehicleAttackProbabilities(3, 4, 14, null, [], [{ id: 'criticalHit', value: 2 }], 0); // S + 6 < AV
+    expect(r.pHit).toBeCloseTo(5 / 6, 9);
+    expect(r.pGlance).toBe(0);
+    expect(r.pPenetrateNormal).toBe(0);
+    expect(r.pPenetrateCritical).toBe(0);
+  });
+
+  it('only Penetrating Hits carry the critical share; Glancing is unaffected', () => {
+    const without = resolveVehicleAttackProbabilities(3, 7, 12, null, [], [], 0);
+    const withCrit = resolveVehicleAttackProbabilities(3, 7, 12, null, [], [{ id: 'criticalHit', value: 5 }], 0);
+    expect(withCrit.pGlance).toBeCloseTo(without.pGlance, 9);
+    expect(withCrit.pPenetrateNormal + withCrit.pPenetrateCritical).toBeCloseTo(without.pPenetrateNormal, 9);
+    expect(withCrit.pPenetrateCritical).toBeCloseTo((2 / 6) * (1 / 6), 9); // hit dice 5 and 6 are critical
+  });
+
+  it('uses the better of the innate (BS-derived) and explicit thresholds', () => {
+    // BS9: hits on 2+, innate Critical Hit on 3+. The explicit 5+ is worse, so 3+ applies.
+    const r = resolveVehicleAttackProbabilities(
+      needForBS(9), 12, 10, getInnateCriticalX(9), [], [{ id: 'criticalHit', value: 5 }], 0
+    );
+    expect(r.pHit).toBeCloseTo(5 / 6, 9);
+    expect(r.pPenetrateCritical).toBeCloseTo((4 / 6) * (5 / 6), 9); // hit dice 3,4,5,6
+    expect(r.pPenetrateNormal).toBeCloseTo((1 / 6) * (5 / 6), 9);   // hit die 2
+  });
+
+  it('an automatic hit with an innate Critical Hit makes every hit critical', () => {
+    const r = resolveVehicleAttackProbabilities(null, 12, 10, 2, [], [], 0);
+    expect(r.pPenetrateNormal).toBe(0);
+    expect(r.pPenetrateCritical).toBeCloseTo(5 / 6, 9);
+  });
+});
+
+describe('resolveVehicleAttackProbabilities — Legiones Astartes: Imperial Fists', () => {
+  const IF_RULE = { id: 'imperialFists', value: 1, traits: ['bolt'] };
+  const BOLT = [{ id: 'bolt' }];
+  const hit = (hitNeed, traits, shots) =>
+    resolveVehicleAttackProbabilities(hitNeed, 12, 10, null, traits, [IF_RULE], shots).pHit;
+
+  it('grants +1 to hit with a qualifying trait and 5+ shots', () => {
+    expect(hit(3, BOLT, 5)).toBeCloseTo(5 / 6, 9);
+  });
+  it('does nothing below 5 shots', () => {
+    expect(hit(3, BOLT, 4)).toBeCloseTo(4 / 6, 9);
+  });
+  it('needs a qualifying trait', () => {
+    expect(hit(3, [{ id: 'melee' }], 5)).toBeCloseTo(4 / 6, 9);
+    expect(hit(3, [], 5)).toBeCloseTo(4 / 6, 9);
+  });
+  it('cannot improve a threshold that is already 2+, or rescue an Automatic Fail', () => {
+    expect(hit(2, BOLT, 5)).toBeCloseTo(5 / 6, 9);
+    expect(hit(7, BOLT, 5)).toBe(0);
+  });
+  it('compounds with Snap Shots (5+ becomes 4+)', () => {
+    expect(hit(needForBSSnapShot(4), BOLT, 5)).toBeCloseTo(3 / 6, 9);
+  });
+});
+
+describe('resolveVehicleAttackProbabilities — Armourbane', () => {
+  const ARMOURBANE = [{ id: 'armourbane', value: 1 }];
+  // hitNeed = null makes every attack an automatic hit, isolating the Armour Penetration test itself.
+  const ap = (S, AV, rules = []) => resolveVehicleAttackProbabilities(null, S, AV, null, [], rules, 0);
+
+
+  it('never inflicts a Glancing Hit, whatever the Strength and Armour Value', () => {
+    for (let S = 1; S <= 20; S++) {
+      for (let AV = 10; AV <= 15; AV++) expect(ap(S, AV, ARMOURBANE).pGlance).toBe(0);
+    }
+  });
+
+  it('turns the one roll that would have Glanced (S + D6 = AV) into a Penetrating Hit', () => {
+    const without = ap(7, 12, []);
+    const withAB = ap(7, 12, ARMOURBANE);
+    expect(without.pGlance).toBeCloseTo(1 / 6, 9);
+    expect(without.pPenetrateNormal).toBeCloseTo(1 / 6, 9);
+    expect(withAB.pGlance).toBe(0);
+    expect(withAB.pPenetrateNormal).toBeCloseTo(2 / 6, 9);
+  });
+
+  it('matches a die-by-die enumeration (natural 1 always fails; reaching AV or more penetrates)', () => {
+    for (let S = 1; S <= 20; S++) {
+      for (let AV = 1; AV <= 20; AV++) {
+        let expected = 0;
+        for (let d = 2; d <= 6; d++) if (S + d >= AV) expected += 1 / 6;
+        expect(ap(S, AV, ARMOURBANE).pPenetrateNormal).toBeCloseTo(expected, 9);
+      }
+    }
+  });
+
+  it('can penetrate when S + 6 exactly equals AV, which without Armourbane could only Glance', () => {
+    expect(ap(6, 12, []).pPenetrateNormal).toBe(0);
+    expect(ap(6, 12, ARMOURBANE).pPenetrateNormal).toBeCloseTo(1 / 6, 9);
+  });
+
+  it('does not let a weapon that cannot reach AV hurt it', () => {
+    const r = ap(4, 14, ARMOURBANE); // S + 6 = 10 < 14
+    expect(r.pGlance).toBe(0);
+    expect(r.pPenetrateNormal).toBe(0);
+  });
+
+  it('a natural 1 still always fails, even when S + 1 would reach AV', () => {
+    expect(ap(11, 12, ARMOURBANE).pPenetrateNormal).toBeCloseTo(5 / 6, 9); // S + 1 = AV
+    expect(ap(12, 10, ARMOURBANE).pPenetrateNormal).toBeCloseTo(5 / 6, 9); // S + 1 > AV
+  });
+
+  it('creates and loses nothing: damaging hits equal the old Glances plus Penetrates', () => {
+    for (let S = 1; S <= 20; S++) {
+      for (let AV = 10; AV <= 15; AV++) {
+        const before = ap(S, AV, []);
+        const after = ap(S, AV, ARMOURBANE);
+        expect(after.pPenetrateNormal).toBeCloseTo(before.pGlance + before.pPenetrateNormal, 9);
+      }
+    }
+  });
+
+  it("applies Critical Hit's +1 Damage to an upgraded hit, since it is a Penetrating Hit", () => {
+    const crit = [{ id: 'criticalHit', value: 5 }];
+    const before = resolveVehicleAttackProbabilities(3, 7, 12, null, [], crit, 0);
+    const after = resolveVehicleAttackProbabilities(3, 7, 12, null, [], [...crit, ...ARMOURBANE], 0);
+    const beforeTotal = before.pPenetrateNormal + before.pPenetrateCritical;
+    const afterTotal = after.pPenetrateNormal + after.pPenetrateCritical;
+    expect(afterTotal).toBeCloseTo(beforeTotal + before.pGlance, 9);
+    // the critical share of hits is unchanged, so the same share of upgraded hits is critical
+    expect(after.pPenetrateCritical / afterTotal).toBeCloseTo(before.pPenetrateCritical / beforeTotal, 9);
+  });
+
+  it('with no Armourbane rule active, behaviour is unchanged (regression)', () => {
+    const r = ap(7, 12, []);
+    expect(r.pGlance).toBeCloseTo(1 / 6, 9);
+    expect(r.pPenetrateNormal).toBeCloseTo(1 / 6, 9);
+  });
+
+  it('leaves no Glancing Hits to roll on the Damage Table, so no Status can be inflicted', () => {
+    const r = resolveVehicleAttackProbabilities(3, 7, 12, null, [], ARMOURBANE, 0);
+    const out = resolveVehicleFinalOutcomeProbabilities(r.pGlance, r.pPenetrateNormal, r.pPenetrateCritical, 7, 7, 1);
+    const status = computeStatusInflictedProbability(10, out.pGlanceUnsaved);
+    expect(status.stunned).toBe(0);
+    expect(status.pinned).toBe(0);
+    expect(status.suppressed).toBe(0);
+  });
+});
+
+describe('resolveVehicleAttackProbabilities — Shock (X)', () => {
+  const shock = (status) => [{ id: 'shock', value: status }];
+  // chance per die that Shock fires, against S7 vs AV12 (the Armour Penetration test is irrelevant to the trigger)
+  const trigger = (hitNeed, rules = shock('Stunned'), traits = [], shots = 0) =>
+    resolveVehicleAttackProbabilities(hitNeed, 7, 12, null, traits, rules, shots).shock.pTrigger;
+
+  it('is inactive without the rule: no status and no trigger', () => {
+    expect(resolveVehicleAttackProbabilities(3, 7, 12, null, [], [], 0).shock).toBe(null);
+  });
+
+  it('triggers on a HIT whose unmodified roll was a 5 or 6: two faces in six whenever the Hit Test needs 5+ or better', () => {
+    for (const need of [2, 3, 4, 5]) expect(trigger(need)).toBeCloseTo(2 / 6, 9);
+  });
+
+  it('only a 6 triggers it when the Hit Test needs 6+', () => {
+    expect(trigger(6)).toBeCloseTo(1 / 6, 9);
+  });
+
+  it('a natural 5 on a FAILED Hit Test does not trigger it — the trigger needs a Hit', () => {
+    // BS1 needs 6+, so a 5 misses. This documents the reading adopted: Shock fires on hits.
+    expect(trigger(needForBS(1))).toBeCloseTo(1 / 6, 9);
+  });
+
+  it('Snap Shots: BS2-3 need 6+ so only a 6 triggers; BS1 is an Automatic Fail and never does', () => {
+    expect(trigger(needForBSSnapShot(2))).toBeCloseTo(1 / 6, 9);
+    expect(trigger(needForBSSnapShot(3))).toBeCloseTo(1 / 6, 9);
+    expect(trigger(needForBSSnapShot(1))).toBe(0);
+  });
+
+  it('an automatic hit (BS10) always triggers it', () => {
+    expect(trigger(null)).toBe(1);
+  });
+
+  it('Imperial Fists can turn a natural 5 into a Hit, which then triggers it', () => {
+    const IF_RULE = { id: 'imperialFists', value: 1, traits: ['bolt'] };
+    expect(trigger(6, [IF_RULE, ...shock('Stunned')], [{ id: 'bolt' }], 5)).toBeCloseTo(2 / 6, 9); // 6+ becomes 5+
+    expect(trigger(6, [IF_RULE, ...shock('Stunned')], [{ id: 'bolt' }], 4)).toBeCloseTo(1 / 6, 9); // under 5 shots: no bonus
+  });
+
+  it('Critical Hit lowering the hit threshold can do the same', () => {
+    expect(trigger(6, [...shock('Stunned'), { id: 'criticalHit', value: 5 }])).toBeCloseTo(2 / 6, 9);
+  });
+
+  it('a modifier can never turn a 4 into a trigger: it is the UNMODIFIED roll that counts', () => {
+    // Critical Hit at 4+ makes a natural 4 a hit, but a hit on a 4 is still not a 5 or 6
+    expect(trigger(6, [...shock('Stunned'), { id: 'criticalHit', value: 4 }])).toBeCloseTo(2 / 6, 9);
+  });
+
+  it('accepts the status in any letter case and reports it in lower case', () => {
+    for (const [given, reported] of [['Pinned', 'pinned'], ['SUPPRESSED', 'suppressed'], ['stunned', 'stunned']]) {
+      expect(resolveVehicleAttackProbabilities(3, 7, 12, null, [], shock(given), 0).shock.status).toBe(reported);
+    }
+  });
+
+  it('ignores a value that is not a Vehicle status', () => {
+    expect(resolveVehicleAttackProbabilities(3, 7, 12, null, [], [{ id: 'shock', value: 4 }], 0).shock).toBe(null);
+    expect(resolveVehicleAttackProbabilities(3, 7, 12, null, [], shock('Burning'), 0).shock).toBe(null);
+  });
+
+  it('never changes whether hits land or how the Armour Penetration test goes — hits are not discarded', () => {
+    const without = resolveVehicleAttackProbabilities(3, 7, 12, null, [], [], 0);
+    const withShock = resolveVehicleAttackProbabilities(3, 7, 12, null, [], shock('Stunned'), 0);
+    expect(withShock.pHit).toBe(without.pHit);
+    expect(withShock.pGlance).toBe(without.pGlance);
+    expect(withShock.pPenetrateNormal).toBe(without.pPenetrateNormal);
+    expect(withShock.pPenetrateCritical).toBe(without.pPenetrateCritical);
+  });
+
+  it('can never fire more often than the chance to hit', () => {
+    for (const need of [2, 3, 4, 5, 6, 7]) {
+      const r = resolveVehicleAttackProbabilities(need, 7, 12, null, [], shock('Stunned'), 0);
+      expect(r.shock.pTrigger).toBeLessThanOrEqual(r.pHit + 1e-12);
+    }
+  });
+});
+
+describe('vehicle shooting — Shock (X) end to end', () => {
+  const SHOCK = (status) => [{ id: 'shock', value: status }];
+  const STATUSES = ['stunned', 'pinned', 'suppressed'];
+
+  const run = ({ hitNeed, S, AV, invuln = 7, cover = 7, mitFail = 1, dice, dmg = 2, hp = 4, rules }) => {
+    const atk = resolveVehicleAttackProbabilities(hitNeed, S, AV, null, [], rules, dice);
+    const out = resolveVehicleFinalOutcomeProbabilities(atk.pGlance, atk.pPenetrateNormal, atk.pPenetrateCritical, invuln, cover, mitFail);
+    return {
+      hull: computeVehicleHullPointDistribution(dice, out.pGlanceUnsaved, out.pPenetrateNormalUnsaved, out.pPenetrateCriticalUnsaved, dmg, hp),
+      status: computeStatusInflictedProbability(dice, out.pGlanceUnsaved, atk.shock),
+    };
+  };
+
+  // Independent oracle built from the dice themselves: the chance, for ONE attacking die, that
+  // `status` ends up inflicted — by Shock, or by an unsaved Glancing Hit that rolls it.
+  function perDieChance({ hitNeed, S, AV, unsavedFactor, shockStatus, status }) {
+    const statusOf = (roll) => (roll <= 2 ? 'stunned' : roll <= 4 ? 'pinned' : 'suppressed');
+    let q = 0;
+    for (let hitDie = 1; hitDie <= 6; hitDie++) {
+      if (hitDie === 1 || hitDie < hitNeed) continue;                    // a natural 1 always misses
+      if (shockStatus === status && hitDie >= 5) { q += 1 / 6; continue; } // Shock: unmodified 5 or 6 on a hit
+      for (let penDie = 2; penDie <= 6; penDie++) {                      // a natural 1 always fails
+        if (S + penDie !== AV) continue;                                 // only an exact match Glances
+        for (let tableRoll = 1; tableRoll <= 6; tableRoll++) {
+          if (statusOf(tableRoll) === status) q += (1 / 6) * (1 / 6) * (1 / 6) * unsavedFactor;
+        }
+      }
+    }
+    return q;
+  }
+
+  it('never changes Hull Point loss — Shock never costs a Hull Point', () => {
+    const without = run({ hitNeed: 3, S: 7, AV: 12, dice: 6, rules: [] });
+    for (const status of ['Stunned', 'Pinned', 'Suppressed']) {
+      const withShock = run({ hitNeed: 3, S: 7, AV: 12, dice: 6, rules: SHOCK(status) });
+      for (let k = 0; k < without.hull.length; k++) expect(withShock.hull[k]).toBeCloseTo(without.hull[k], 9);
+    }
+  });
+
+  it('matches an independent die-by-die enumeration, for every Shock status and every status reported', () => {
+    const cases = [
+      { hitNeed: 3, S: 7, AV: 12, dice: 5 },
+      { hitNeed: 5, S: 7, AV: 10, dice: 4, invuln: 4 },
+      { hitNeed: 6, S: 6, AV: 12, dice: 3, cover: 5 },
+      { hitNeed: 2, S: 9, AV: 11, dice: 6 },
+    ];
+    for (const c of cases) {
+      const best = Math.min(c.invuln ?? 7, c.cover ?? 7);
+      const unsavedFactor = best >= 7 ? 1 : 1 - (7 - best) / 6;
+      for (const shocked of STATUSES) {
+        const r = run({ ...c, rules: SHOCK(shocked) });
+        for (const status of STATUSES) {
+          const q = perDieChance({ ...c, unsavedFactor, shockStatus: shocked, status });
+          expect(r.status[status]).toBeCloseTo(1 - Math.pow(1 - q, c.dice), 9);
+        }
+      }
+    }
+  });
+
+  it('hand-derived: a weapon that cannot hurt the vehicle still inflicts the Shock status', () => {
+    const one = run({ hitNeed: needForBS(4), S: 4, AV: 15, dice: 1, rules: SHOCK('Pinned') });
+    expect(one.status.pinned).toBeCloseTo(1 / 3, 9);
+    expect(one.status.stunned).toBe(0);
+    expect(one.status.suppressed).toBe(0);
+    const two = run({ hitNeed: needForBS(4), S: 4, AV: 15, dice: 2, rules: SHOCK('Pinned') });
+    expect(two.status.pinned).toBeCloseTo(5 / 9, 9);
+  });
+
+  it('hand-derived with Glancing Hits: BS4, S7 vs AV12, Shock (Stunned), one die', () => {
+    const r = run({ hitNeed: needForBS(4), S: 7, AV: 12, dice: 1, rules: SHOCK('Stunned') });
+    expect(r.status.stunned).toBeCloseTo(19 / 54, 9); // 1/3 + (1/3)(1/6)(1/3): a hit can be both, counted once
+    expect(r.status.pinned).toBeCloseTo(1 / 27, 9);   // Glancing Hits alone
+  });
+
+  it('saves and Damage Mitigation cannot stop a Shock status', () => {
+    const r = run({ hitNeed: needForBS(4), S: 4, AV: 15, dice: 1, invuln: 2, cover: 2, mitFail: 0, rules: SHOCK('Stunned') });
+    expect(r.status.stunned).toBeCloseTo(1 / 3, 9);
+  });
+
+  it('Armourbane removes the Glancing route to a status but not the Shock route', () => {
+    const r = run({ hitNeed: needForBS(4), S: 7, AV: 12, dice: 1, rules: [...SHOCK('Pinned'), { id: 'armourbane', value: 1 }] });
+    expect(r.status.pinned).toBeCloseTo(1 / 3, 9);
+    expect(r.status.stunned).toBe(0);
   });
 });

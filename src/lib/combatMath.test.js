@@ -16,6 +16,11 @@ import {
   computeModelsRemovedMultiTier,
   applyWoundGroupToState,
   applyDeflagrateWave,
+  resolveVehicleAttackProbabilities, 
+  resolveVehicleFinalOutcomeProbabilities, 
+  resolveEscalationHPDistribution, 
+  computeVehicleHullPointDistribution,
+  computeStatusInflictedProbability,
   binomialPMF,
   propagate,
   mean,
@@ -600,5 +605,477 @@ describe('resolveAttackProbabilities — Snap Shot', () => {
   it('isSnapShot=false exactly matches non-Snap-Shot behaviour (regression)', () => {
     const snapFalse = resolveAttackProbabilities(needForBS(4), 6, 4, getInnateCriticalX(4), [], [{ id: 'rending', value: 5 }], [], 1);
     expect(snapFalse.pHit).toBeCloseTo(4 / 6, 9);
+  });
+});
+
+// ============================================================================
+// Vehicle shooting phase
+//
+// Add these to the existing import list from './combatMath.js'
+// (needForBS and needForBSSnapShot are already imported there):
+//   resolveVehicleAttackProbabilities,
+//   resolveVehicleFinalOutcomeProbabilities,
+//   resolveEscalationHPDistribution,
+//   computeVehicleHullPointDistribution,
+//   computeStatusInflictedProbability,
+//
+// The helpers and tests sit inside one wrapper describe so the helper names
+// (sum, ap, bruteEscalation, bruteHullPoints) cannot clash with anything else
+// in the file.
+// ============================================================================
+
+describe('Vehicle shooting phase', () => {
+  // Test helpers — independent oracles, deliberately NOT built from the formulas
+  // the functions under test use.
+  const sum = (arr) => arr.reduce((a, b) => a + b, 0);
+
+  // hitNeed = null makes every attack an automatic hit, isolating the Armour Penetration test itself.
+  const ap = (S, AV, rules = []) => resolveVehicleAttackProbabilities(null, S, AV, null, [], rules, 0);
+
+  // Every possible sequence of g Vehicle Damage Table rolls (each Stunned / Pinned / Suppressed).
+  // A status already held costs one Hull Point instead: sum of (count - 1) over statuses rolled.
+  function bruteEscalation(g) {
+    const out = new Map();
+    const total = Math.pow(3, g);
+    for (let seq = 0; seq < total; seq++) {
+      const counts = [0, 0, 0];
+      let x = seq;
+      for (let i = 0; i < g; i++) { counts[x % 3]++; x = Math.floor(x / 3); }
+      const hp = counts.reduce((acc, c) => acc + Math.max(0, c - 1), 0);
+      out.set(hp, (out.get(hp) || 0) + 1 / total);
+    }
+    return out;
+  }
+
+  // Every die lands as miss / glance / penetrate / critical penetrate; every glance then
+  // independently rolls a status. Total Hull Points lost is capped at the vehicle's total.
+  function bruteHullPoints(totalDice, pGlance, pPenNormal, pPenCrit, dmg, maxHP) {
+    const pMiss = 1 - pGlance - pPenNormal - pPenCrit;
+    const dist = new Array(maxHP + 1).fill(0);
+    function walk(i, glances, penHP, prob) {
+      if (i === totalDice) {
+        const combos = Math.pow(3, glances);
+        for (let s = 0; s < combos; s++) {
+          const counts = [0, 0, 0];
+          let x = s;
+          for (let j = 0; j < glances; j++) { counts[x % 3]++; x = Math.floor(x / 3); }
+          const esc = counts.reduce((a, c) => a + Math.max(0, c - 1), 0);
+          dist[Math.min(maxHP, penHP + esc)] += prob / combos;
+        }
+        return;
+      }
+      walk(i + 1, glances, penHP, prob * pMiss);
+      walk(i + 1, glances + 1, penHP, prob * pGlance);
+      walk(i + 1, glances, penHP + dmg, prob * pPenNormal);
+      walk(i + 1, glances, penHP + dmg + 1, prob * pPenCrit);
+    }
+    walk(0, 0, 0, 1);
+    return dist;
+  }
+
+  describe('resolveVehicleAttackProbabilities — Armour Penetration test', () => {
+    it('matches a die-by-die enumeration where a natural 1 always fails', () => {
+      for (let S = 1; S <= 20; S++) {
+        for (let AV = 1; AV <= 20; AV++) {
+          let glance = 0, pen = 0;
+          for (let d = 2; d <= 6; d++) {
+            if (S + d === AV) glance += 1 / 6;
+            else if (S + d > AV) pen += 1 / 6;
+          }
+          const r = ap(S, AV);
+          expect(r.pGlance).toBeCloseTo(glance, 9);
+          expect(r.pPenetrateNormal).toBeCloseTo(pen, 9);
+        }
+      }
+    });
+
+    it('a weapon that cannot reach AV (S + 6 < AV) can neither Glance nor Penetrate', () => {
+      for (const [S, AV] of [[4, 11], [4, 14], [3, 15], [1, 10]]) {
+        const r = ap(S, AV);
+        expect(r.pGlance).toBe(0);
+        expect(r.pPenetrateNormal).toBe(0);
+      }
+    });
+
+    it('S + 6 = AV can only Glance, and only on a roll of 6', () => {
+      const r = ap(6, 12);
+      expect(r.pGlance).toBeCloseTo(1 / 6, 9);
+      expect(r.pPenetrateNormal).toBe(0);
+    });
+
+    it('AV = S + 1 cannot Glance (that would need a natural 1) and Penetrates on 2-6', () => {
+      const r = ap(11, 12);
+      expect(r.pGlance).toBe(0);
+      expect(r.pPenetrateNormal).toBeCloseTo(5 / 6, 9);
+    });
+
+    it('AV at or below S Penetrates on any roll of 2-6 (a natural 1 still fails)', () => {
+      for (const [S, AV] of [[12, 10], [10, 10], [20, 15]]) {
+        const r = ap(S, AV);
+        expect(r.pGlance).toBe(0);
+        expect(r.pPenetrateNormal).toBeCloseTo(5 / 6, 9);
+      }
+    });
+
+    it('hand-derived table for S 7: a Glance is one face in six, and Penetrate shrinks as AV rises', () => {
+      const expectedPen = { 9: 4 / 6, 10: 3 / 6, 11: 2 / 6, 12: 1 / 6, 13: 0 };
+      for (const [AV, pen] of Object.entries(expectedPen)) {
+        const r = ap(7, Number(AV));
+        expect(r.pGlance).toBeCloseTo(1 / 6, 9);
+        expect(r.pPenetrateNormal).toBeCloseTo(pen, 9);
+      }
+    });
+
+    it('Glancing and Penetrating together never exceed certainty', () => {
+      for (let S = 1; S <= 20; S++) {
+        for (let AV = 10; AV <= 15; AV++) {
+          const r = ap(S, AV);
+          expect(r.pGlance + r.pPenetrateNormal + r.pPenetrateCritical).toBeLessThanOrEqual(1 + 1e-12);
+        }
+      }
+    });
+  });
+
+  describe('resolveVehicleAttackProbabilities — hit roll', () => {
+    it('scales the Armour Penetration outcome by the chance to hit', () => {
+      const r = resolveVehicleAttackProbabilities(needForBS(4), 7, 12, null, [], [], 0); // BS4: 3+, S7 vs AV12
+      expect(r.pHit).toBeCloseTo(4 / 6, 9);
+      expect(r.pGlance).toBeCloseTo((4 / 6) * (1 / 6), 9);
+      expect(r.pPenetrateNormal).toBeCloseTo((4 / 6) * (1 / 6), 9);
+    });
+
+    it('BS 1-10 follow the normal Ballistic Skill table', () => {
+      for (let bs = 1; bs <= 10; bs++) {
+        const need = needForBS(bs);
+        const expected = need === null ? 1 : (7 - need) / 6;
+        const r = resolveVehicleAttackProbabilities(need, 12, 10, null, [], [], 0);
+        expect(r.pHit).toBeCloseTo(expected, 9);
+        expect(r.pPenetrateNormal).toBeCloseTo(expected * (5 / 6), 9);
+      }
+    });
+
+    it('an automatic hit (BS10) always hits', () => {
+      expect(ap(12, 10).pHit).toBe(1);
+    });
+
+    it('Snap Shots at BS1 is an Automatic Fail: nothing hits, so nothing is hurt', () => {
+      const r = resolveVehicleAttackProbabilities(needForBSSnapShot(1), 12, 10, null, [], [], 0);
+      expect(r.pHit).toBe(0);
+      expect(r.pGlance).toBe(0);
+      expect(r.pPenetrateNormal).toBe(0);
+    });
+
+    it('Snap Shots at BS4 needs 5+ instead of 3+, halving the chance to hit', () => {
+      const r = resolveVehicleAttackProbabilities(needForBSSnapShot(4), 7, 12, null, [], [], 0);
+      expect(r.pHit).toBeCloseTo(2 / 6, 9);
+    });
+
+    it('normal and critical Penetrating Hits always add up to the Penetrating share of hits', () => {
+      const r = resolveVehicleAttackProbabilities(3, 8, 11, null, [], [{ id: 'criticalHit', value: 5 }], 0);
+      expect(r.pPenetrateNormal + r.pPenetrateCritical).toBeCloseTo(r.pHit * (3 / 6), 9); // S8 vs AV11: roll 4+ penetrates
+    });
+  });
+
+  describe('resolveVehicleFinalOutcomeProbabilities — saves and Damage Mitigation', () => {
+    const run = (invuln, cover, mitFail = 1) => resolveVehicleFinalOutcomeProbabilities(0.2, 0.1, 0.05, invuln, cover, mitFail);
+
+    it('with no save and no mitigation, nothing is removed', () => {
+      const r = run(7, 7);
+      expect(r.pGlanceUnsaved).toBeCloseTo(0.2, 9);
+      expect(r.pPenetrateNormalUnsaved).toBeCloseTo(0.1, 9);
+      expect(r.pPenetrateCriticalUnsaved).toBeCloseTo(0.05, 9);
+    });
+
+    it('an Invulnerable Save applies to Glancing and Penetrating Hits alike', () => {
+      const r = run(4, 7); // 4+ saves half
+      expect(r.pGlanceUnsaved).toBeCloseTo(0.1, 9);
+      expect(r.pPenetrateNormalUnsaved).toBeCloseTo(0.05, 9);
+      expect(r.pPenetrateCriticalUnsaved).toBeCloseTo(0.025, 9);
+    });
+
+    it('uses the better of an Invulnerable and a Cover Save', () => {
+      const r = run(5, 3); // Cover 3+ beats Invulnerable 5+
+      expect(r.save.source).toBe('Cover');
+      expect(r.pGlanceUnsaved).toBeCloseTo(0.2 * (2 / 6), 9);
+    });
+
+    it('a vehicle can never take an Armour Save, whatever other saves it has', () => {
+      for (let invuln = 2; invuln <= 7; invuln++) {
+        for (let cover = 2; cover <= 7; cover++) {
+          const r = run(invuln, cover);
+          expect(r.save.source === 'Armour').toBe(false);
+          expect(r.save.armourUsable).toBe(false);
+        }
+      }
+    });
+
+    it('Damage Mitigation multiplies in after the save', () => {
+      const r = run(4, 7, 0.5); // save halves, mitigation halves again
+      expect(r.pGlanceUnsaved).toBeCloseTo(0.2 * 0.25, 9);
+      expect(r.pPenetrateNormalUnsaved).toBeCloseTo(0.1 * 0.25, 9);
+    });
+
+    it('cannot create a hit that was not there', () => {
+      const r = resolveVehicleFinalOutcomeProbabilities(0, 0, 0, 2, 2, 0);
+      expect(r.pGlanceUnsaved).toBe(0);
+      expect(r.pPenetrateNormalUnsaved).toBe(0);
+      expect(r.pPenetrateCriticalUnsaved).toBe(0);
+    });
+  });
+
+  describe('resolveEscalationHPDistribution — Vehicle Damage Table', () => {
+    it('matches a brute-force enumeration of every possible sequence of rolls', () => {
+      for (let g = 0; g <= 7; g++) {
+        const actual = resolveEscalationHPDistribution(g);
+        const expected = bruteEscalation(g);
+        expect(actual.size).toBe(expected.size);
+        for (const [hp, p] of expected) expect(actual.get(hp)).toBeCloseTo(p, 9);
+      }
+    });
+
+    it('one Glancing Hit can never remove a Hull Point', () => {
+      expect(resolveEscalationHPDistribution(1).get(0)).toBeCloseTo(1, 9);
+    });
+
+    it('two Glancing Hits remove a Hull Point only by rolling the same status (1 in 3)', () => {
+      const d = resolveEscalationHPDistribution(2);
+      expect(d.get(0)).toBeCloseTo(2 / 3, 9);
+      expect(d.get(1)).toBeCloseTo(1 / 3, 9);
+    });
+
+    it('hand-derived distribution for three Glancing Hits', () => {
+      const d = resolveEscalationHPDistribution(3);
+      expect(d.get(0)).toBeCloseTo(2 / 9, 9); // all different
+      expect(d.get(1)).toBeCloseTo(6 / 9, 9); // exactly two the same
+      expect(d.get(2)).toBeCloseTo(1 / 9, 9); // all the same
+    });
+
+    it('probabilities sum to 1 for any number of Glancing Hits', () => {
+      for (let g = 0; g <= 30; g++) {
+        expect(sum([...resolveEscalationHPDistribution(g).values()])).toBeCloseTo(1, 9);
+      }
+    });
+
+    it('the worst case (every roll the same status) removes g-1 Hull Points, with probability 3 x (1/3)^g', () => {
+      for (let g = 1; g <= 10; g++) {
+        const d = resolveEscalationHPDistribution(g);
+        expect(d.get(g - 1)).toBeCloseTo(3 * Math.pow(1 / 3, g), 9);
+        expect(Math.max(...d.keys())).toBe(g - 1);
+      }
+    });
+  });
+
+  describe('computeVehicleHullPointDistribution', () => {
+    it('matches a brute-force enumeration of every die and every Damage Table roll', () => {
+      const cases = [
+        [4, 0.2, 0.15, 0.1, 1, 4],
+        [3, 0.3, 0.2, 0.05, 2, 3],
+        [5, 0.15, 0.1, 0.1, 1, 5],
+        [4, 0.25, 0.25, 0.25, 3, 6],
+      ];
+      for (const [dice, g, pn, pc, dmg, hp] of cases) {
+        const actual = computeVehicleHullPointDistribution(dice, g, pn, pc, dmg, hp);
+        const expected = bruteHullPoints(dice, g, pn, pc, dmg, hp);
+        for (let k = 0; k <= hp; k++) expect(actual[k]).toBeCloseTo(expected[k], 9);
+      }
+    });
+
+    it('has maxHullPoints + 1 entries and sums to 1', () => {
+      const d = computeVehicleHullPointDistribution(12, 0.1, 0.1, 0.05, 2, 5);
+      expect(d.length).toBe(6);
+      expect(sum(d)).toBeCloseTo(1, 9);
+    });
+
+    it('still sums to 1 at a large dice count', () => {
+      expect(sum(computeVehicleHullPointDistribution(100, 0.15, 0.1, 0.05, 2, 8))).toBeCloseTo(1, 9);
+    });
+
+    it('when nothing can hurt the vehicle, all probability sits at 0 Hull Points lost', () => {
+      const d = computeVehicleHullPointDistribution(20, 0, 0, 0, 2, 4);
+      expect(d[0]).toBeCloseTo(1, 9);
+    });
+
+    it('Penetrating Hits remove exactly Damage each', () => {
+      const d = computeVehicleHullPointDistribution(3, 0, 1, 0, 2, 10); // 3 certain penetrates x 2
+      expect(d[6]).toBeCloseTo(1, 9);
+    });
+
+    it('Hull Point loss is capped at the vehicle total — further damage is wasted', () => {
+      const d = computeVehicleHullPointDistribution(3, 0, 1, 0, 2, 4); // would be 6, capped at 4
+      expect(d[4]).toBeCloseTo(1, 9);
+    });
+
+    it('a penetrating Critical Hit removes Damage + 1', () => {
+      const d = computeVehicleHullPointDistribution(2, 0, 0, 1, 2, 10); // 2 certain criticals x 3
+      expect(d[6]).toBeCloseTo(1, 9);
+    });
+
+    it('Glancing Hits remove a Hull Point only by repeating a Status', () => {
+      const d = computeVehicleHullPointDistribution(2, 1, 0, 0, 1, 3); // two certain Glances
+      expect(d[0]).toBeCloseTo(2 / 3, 9);
+      expect(d[1]).toBeCloseTo(1 / 3, 9);
+      expect(d[2]).toBe(0);
+    });
+
+    it('a single die can never trigger escalation, so a lone Glance does nothing', () => {
+      const d = computeVehicleHullPointDistribution(1, 0.25, 0.25, 0, 2, 3);
+      expect(d[0]).toBeCloseTo(0.75, 9); // miss or Glance
+      expect(d[2]).toBeCloseTo(0.25, 9); // Penetrate
+    });
+
+    it('higher Damage never lowers the chance of destroying the vehicle', () => {
+      let previous = -1;
+      for (let dmg = 1; dmg <= 5; dmg++) {
+        const d = computeVehicleHullPointDistribution(6, 0.1, 0.1, 0.05, dmg, 4);
+        expect(d[4]).toBeGreaterThanOrEqual(previous - 1e-12);
+        previous = d[4];
+      }
+    });
+
+    it('more dice never lower the chance of destroying the vehicle', () => {
+      let previous = -1;
+      for (let dice = 1; dice <= 12; dice++) {
+        const d = computeVehicleHullPointDistribution(dice, 0.1, 0.1, 0.05, 2, 4);
+        expect(d[4]).toBeGreaterThanOrEqual(previous - 1e-12);
+        previous = d[4];
+      }
+    });
+  });
+
+  describe('computeStatusInflictedProbability', () => {
+    it('is 0 when no Glancing Hit can occur', () => {
+      expect(computeStatusInflictedProbability(20, 0).stunned).toBe(0);
+    });
+
+    it('with one die it is simply a third of the Glance chance', () => {
+      expect(computeStatusInflictedProbability(1, 0.3).stunned).toBeCloseTo(0.1, 9);
+    });
+
+    it('matches an enumeration of every die being no-status / Stunned / Pinned / Suppressed', () => {
+      for (const [dice, p] of [[1, 0.2], [3, 0.2], [4, 0.45], [5, 0.1]]) {
+        let atLeastOneStunned = 0;
+        const walk = (i, sawStunned, prob) => {
+          if (i === dice) { if (sawStunned) atLeastOneStunned += prob; return; }
+          walk(i + 1, sawStunned, prob * (1 - p));
+          walk(i + 1, true, prob * (p / 3));      // Stunned
+          walk(i + 1, sawStunned, prob * (p / 3)); // Pinned
+          walk(i + 1, sawStunned, prob * (p / 3)); // Suppressed
+        };
+        walk(0, false, 1);
+        expect(computeStatusInflictedProbability(dice, p).stunned).toBeCloseTo(atLeastOneStunned, 9);
+      }
+    });
+
+    it('Stunned, Pinned and Suppressed are always equally likely', () => {
+      const s = computeStatusInflictedProbability(7, 0.37);
+      expect(s.pinned).toBe(s.stunned);
+      expect(s.suppressed).toBe(s.stunned);
+    });
+
+    it('certain Glances give 1 - (2/3)^N', () => {
+      for (const n of [1, 2, 5, 12]) {
+        expect(computeStatusInflictedProbability(n, 1).stunned).toBeCloseTo(1 - Math.pow(2 / 3, n), 9);
+      }
+    });
+
+    it('grows with the number of dice but never exceeds 1', () => {
+      let previous = -1;
+      for (let n = 1; n <= 30; n++) {
+        const p = computeStatusInflictedProbability(n, 0.2).stunned;
+        expect(p).toBeGreaterThanOrEqual(previous);
+        expect(p).toBeLessThanOrEqual(1);
+        previous = p;
+      }
+    });
+  });
+
+  describe('vehicle shooting — full pipeline', () => {
+    const pipeline = ({ hitNeed, S, AV, invuln = 7, cover = 7, mitFail = 1, dice, dmg, hp, rules = [] }) => {
+      const atk = resolveVehicleAttackProbabilities(hitNeed, S, AV, null, [], rules, dice);
+      const out = resolveVehicleFinalOutcomeProbabilities(atk.pGlance, atk.pPenetrateNormal, atk.pPenetrateCritical, invuln, cover, mitFail);
+      return {
+        atk, out,
+        hull: computeVehicleHullPointDistribution(dice, out.pGlanceUnsaved, out.pPenetrateNormalUnsaved, out.pPenetrateCriticalUnsaved, dmg, hp),
+        status: computeStatusInflictedProbability(dice, out.pGlanceUnsaved),
+      };
+    };
+
+    it('hand-derived single die: BS4, S7 vs AV12, Damage 2, 3 Hull Points', () => {
+      // hit 4/6; Glance 1/6 and Penetrate 1/6 of hits => 1/9 each. One Glance cannot escalate.
+      const r = pipeline({ hitNeed: needForBS(4), S: 7, AV: 12, dice: 1, dmg: 2, hp: 3 });
+      expect(r.hull[0]).toBeCloseTo(8 / 9, 9);
+      expect(r.hull[1]).toBeCloseTo(0, 9);
+      expect(r.hull[2]).toBeCloseTo(1 / 9, 9);
+      expect(r.hull[3]).toBeCloseTo(0, 9);
+      expect(r.status.stunned).toBeCloseTo(1 / 27, 9);
+    });
+
+    it('Snap Shots and a 4+ Invulnerable Save are two routes to the same per-die chance, and give identical results', () => {
+      const viaSnapShots = pipeline({ hitNeed: needForBSSnapShot(4), S: 7, AV: 12, dice: 6, dmg: 2, hp: 3 });
+      const viaSave = pipeline({ hitNeed: needForBS(4), S: 7, AV: 12, invuln: 4, dice: 6, dmg: 2, hp: 3 });
+      for (let k = 0; k <= 3; k++) expect(viaSnapShots.hull[k]).toBeCloseTo(viaSave.hull[k], 9);
+      expect(viaSnapShots.status.stunned).toBeCloseTo(viaSave.status.stunned, 9);
+    });
+
+    it('a weapon that cannot reach AV does nothing at all', () => {
+      const r = pipeline({ hitNeed: needForBS(4), S: 4, AV: 12, dice: 30, dmg: 3, hp: 4 });
+      expect(r.hull[0]).toBeCloseTo(1, 9);
+      expect(r.status.stunned).toBe(0);
+    });
+  });
+
+  describe('computeStatusInflictedProbability — with a Shock trigger', () => {
+    // shock = { status, pTrigger, pHit }: pTrigger is the chance per die that Shock fires
+    // (a hit whose unmodified roll is a 5 or 6), pHit the chance per die of a hit at all.
+    const SHOCK = (status, pTrigger, pHit) => ({ status, pTrigger, pHit });
+    const STATUSES = ['stunned', 'pinned', 'suppressed'];
+
+    it('without a shock argument behaves exactly as before', () => {
+      expect(computeStatusInflictedProbability(6, 0.2, null)).toEqual(computeStatusInflictedProbability(6, 0.2));
+    });
+
+    it('raises only the shocked status; the other two still come from Glancing Hits alone', () => {
+      const base = computeStatusInflictedProbability(5, 0.2);
+      for (const status of STATUSES) {
+        const r = computeStatusInflictedProbability(5, 0.2, SHOCK(status, 1 / 3, 2 / 3));
+        expect(r[status]).toBeGreaterThan(base[status]);
+        for (const other of STATUSES.filter((s) => s !== status)) expect(r[other]).toBe(base[other]);
+      }
+    });
+
+    it('hand-derived: a hit that both triggers Shock and Glances is counted once', () => {
+      // trigger 1/3 per die; otherwise the die hits 1/3 of the time, and an unsaved Glance is
+      // 0.15 of hits, rolling the shocked status a third of those: q = 1/3 + (1/3)(0.15)(1/3) = 0.35
+      const shock = SHOCK('pinned', 1 / 3, 2 / 3);
+      expect(computeStatusInflictedProbability(1, 0.1, shock).pinned).toBeCloseTo(0.35, 9);
+      expect(computeStatusInflictedProbability(2, 0.1, shock).pinned).toBeCloseTo(1 - 0.65 * 0.65, 9);
+    });
+
+    it('a certain trigger makes the status certain', () => {
+      expect(computeStatusInflictedProbability(3, 0, SHOCK('suppressed', 1, 1)).suppressed).toBeCloseTo(1, 9);
+    });
+
+    it('a zero trigger chance changes nothing', () => {
+      expect(computeStatusInflictedProbability(4, 0.2, SHOCK('stunned', 0, 0.5))).toEqual(computeStatusInflictedProbability(4, 0.2));
+    });
+
+    it('ignores a status that is not a Vehicle status', () => {
+      expect(computeStatusInflictedProbability(4, 0.2, SHOCK('burning', 0.5, 0.5))).toEqual(computeStatusInflictedProbability(4, 0.2));
+    });
+
+    it('is safe when no hit is possible (no NaN)', () => {
+      const r = computeStatusInflictedProbability(5, 0, SHOCK('pinned', 0, 0));
+      expect(r.pinned).toBe(0);
+    });
+
+    it('grows with the number of dice but never exceeds 1', () => {
+      let previous = -1;
+      for (let n = 1; n <= 30; n++) {
+        const p = computeStatusInflictedProbability(n, 0.1, SHOCK('stunned', 1 / 6, 1 / 2)).stunned;
+        expect(p).toBeGreaterThanOrEqual(previous);
+        expect(p).toBeLessThanOrEqual(1);
+        previous = p;
+      }
+    });
   });
 });

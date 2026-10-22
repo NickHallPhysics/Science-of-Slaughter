@@ -9,6 +9,15 @@
 // ---------- special rule definitions ----------
 export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
   {
+    id: 'armourbane',
+    label: 'Armourbane',
+    valueLabel: 'X',
+    fixedValue: 1,
+    optionSuffix: '', // a flat addition to the Hit roll value, not a dice threshold
+    phaseApplicable: ['shooting_vehicle',],
+    description: 'Armour Penetration Test inflict a Penetrating Hit instead of Glancing Hits.',
+  },
+  {
     id: 'breaching',
     label: 'Breaching',
     valueLabel: 'X',
@@ -87,6 +96,16 @@ export const OFFENSIVE_SPECIAL_RULE_DEFINITIONS = [
     optionSuffix: '+', // this is a threshold value, — render "X+"
     phaseApplicable: ['shooting_infantry', 'assault_infantry'],
     description: 'Roll ≥ X auto-hits and auto-wounds (treated as a 6 to wound).',
+  },
+  {
+    id: 'shock',
+    label: 'Shock',
+    valueLabel: 'X',
+    options: ['Stunned', 'Pinned', 'Suppressed'],
+    defaultValue: 'Stunned',
+    optionSuffix: '', // X is a status name, not a threshold, so show "Stunned" not "Stunned+"
+    phaseApplicable: ['shooting_vehicle'],
+    description: 'Against a Vehicle or Walker: if any Hit Test for this weapon has an unmodified result of 5 or 6, the target gains Status X at the end of the attack. Never causes a Wound or Hull Point to be lost, and the hit still makes its Armour Penetration test.',
   },
   {
     id: 'shred',

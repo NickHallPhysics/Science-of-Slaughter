@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ToggleButton from 'react-bootstrap/ToggleButton';
+import ToggleButtonGroup from 'react-bootstrap/ToggleButtonGroup';
 import { Link } from 'react-router-dom';
 import {
   Chart,
@@ -97,7 +99,7 @@ function useNumericField(initialValue, { min = 1, max = Infinity } = {}) {
   return [value, inputProps];
 }
 
-function BarChart({ series, stacked = false, hidden = {}, onToggle }) {
+function BarChart({ chartId, series, stacked = false, hidden = {}, onToggle }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
 
@@ -158,20 +160,24 @@ function BarChart({ series, stacked = false, hidden = {}, onToggle }) {
 
   return (
     <>
-      <div className="chart-legend">
-        {series.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            className={`legend-item ${hidden[s.id] ? 'legend-item-hidden' : ''}`}
-            style={{ '--legend-color': s.color }}
-            onClick={() => onToggle(s.id)}
-          >
-            <span className="legend-swatch" />
-            {s.label}
-          </button>
-        ))}
-      </div>
+      {series.length > 1 && (
+        <ToggleButtonGroup
+          type="checkbox"
+          defaultValue={series.map((s) => s.value)}
+          className="chart-legend"
+        >
+          {series.map((s) => (
+            <ToggleButton
+              key={s.id}
+              id={`${chartId}-${s.id}`}
+              value={s.value}
+              onChange={() => onToggle(s.id)}
+            >
+              {s.label}
+            </ToggleButton>
+          ))}
+        </ToggleButtonGroup>
+      )}
       <canvas ref={canvasRef} />
     </>
   );
@@ -189,7 +195,7 @@ function SpecialRuleList({ activeRules, definitions, onAdd, onUpdate, onRemove }
           <div className="rule-row" key={rule.id}>
             <span className="rule-name">{def.label}</span>
             {hasOptions ? (
-              <select value={rule.value} onChange={(e) => onUpdate(rule.id, Number(e.target.value), definitions)}>
+              <select value={rule.value} onChange={(e) => onUpdate(rule.id, typeof def.options[0] === 'number' ? Number(e.target.value) : e.target.value, definitions)}>
                 {def.options.map((v) => (
                   <option key={v} value={v}>{v}{def.optionSuffix ?? '+'}</option>
                 ))}
@@ -317,7 +323,7 @@ export default function Page() {
       totalDice, outcome.pGlanceUnsaved, outcome.pPenetrateNormalUnsaved, outcome.pPenetrateCriticalUnsaved, dmg, maxHullPoints
     );
     const cdfHullPoints = cdfAtLeast(distHullPoints);
-    const statusProbs = computeStatusInflictedProbability(totalDice, outcome.pGlanceUnsaved);
+    const statusProbs = computeStatusInflictedProbability(totalDice, outcome.pGlanceUnsaved, atk.shock);
 
     return {
       hitNeed, totalDice,
@@ -326,15 +332,15 @@ export default function Page() {
       pGlanceUnsaved: outcome.pGlanceUnsaved, pPenetrateTotalUnsaved,
       save: outcome.save,
       distHits, distGlance, distPenetrate, distGlanceUnsaved, distPenetrateUnsaved,
-      distHullPoints, cdfHullPoints, statusProbs,
+      distHullPoints, cdfHullPoints, statusProbs, shock: atk.shock,
     };
   }, [bs, isSnapShot, fp, modelsFiring, str, dmg, armourValue, maxHullPoints, invuln, cover,
       activeOffensiveRules, activeTraits, activeDefensiveRules, activeMitigationRules]);
 
   const {
-    hitNeed, totalDice, pHit,
+    hitNeed, save,
     distHits, distGlance, distPenetrate, distGlanceUnsaved, distPenetrateUnsaved,
-    distHullPoints, cdfHullPoints, statusProbs,
+    distHullPoints, cdfHullPoints, statusProbs, shock,
   } = results;
 
   const critNeed = getEffectiveCriticalThreshold(bs, activeOffensiveRules, isSnapShot);
@@ -352,11 +358,14 @@ export default function Page() {
         : `Needs ${hitNeed}+ to hit`;
 
   const apThreshold = armourValue - str;
+  const hasArmourbane = activeOffensiveRules.some((r) => r.id === 'armourbane');
   const apHint = apThreshold > 6
     ? `Strength ${str} cannot hurt Armour Value ${armourValue} at all (max possible ${str}+6)`
     : apThreshold < 2
       ? `Any Armour Penetration roll of 2+ Penetrates Armour Value ${armourValue} (a natural 1 always fails)`
-      : `Armour Penetration: a roll of ${apThreshold} Glances${apThreshold < 6 ? `, ${apThreshold + 1}+ Penetrates` : ''} (a natural 1 always fails)`;
+      : hasArmourbane
+        ? `Armourbane: an Armour Penetration roll of ${apThreshold}+ Penetrates — no Glancing Hits (a natural 1 always fails)`
+        : `Armour Penetration: a roll of ${apThreshold} Glances${apThreshold < 6 ? `, ${apThreshold + 1}+ Penetrates` : ''} (a natural 1 always fails)`;
 
   const mitigation = resolveDamageMitigation(activeMitigationRules);
   const mitigationHint = mitigation.mitigationValue === null
@@ -365,6 +374,11 @@ export default function Page() {
       ? `Recovery Test: ${mitigation.mitigationValue}+ (Medic has no effect on Vehicles).`
       : `Mitigation: ${mitigation.mitigationValue}+ (rolled after a failed Save).`;
 
+  const saveHint = save.saveValue === null
+    ? 'No save available — vehicles cannot take Armour Saves, so every Glancing or Penetrating Hit gets through.'
+    : `Best save used: ${save.saveValue}+ (${save.source}). Vehicles cannot take Armour Saves.`;
+
+  const shockLabel = shock ? shock.status.charAt(0).toUpperCase() + shock.status.slice(1) : null;
   const hullPointsChartDist = vehicleView === 'cumulative' ? cdfHullPoints : distHullPoints;
 
   return (
@@ -381,224 +395,257 @@ export default function Page() {
 
       <div className="layout">
         <div className="controls">
-          <div className="card">
-            <h2>Firing Unit</h2>
 
-            <div className="field">
-              <label>Ballistic Skill (BS)</label>
-              <div className="bs-input-row">
-                <input {...bsInput} />
-                <button
-                  type="button"
-                  className={`toggle-btn ${isSnapShot ? 'active' : ''}`}
-                  onClick={() => setIsSnapShot((v) => !v)}
-                >
-                  Snap Shots
-                </button>
+          <div className="card">
+            <div className="card-head attacker"><span className="dot"></span><span className="tag">Firing Unit</span></div>
+            <div className="card-body">
+              <div className="subgrid">
+                <div className="field">
+                  <label>Ballistic Skill (BS)</label>
+                  <div className="bs-input-row">
+                    <input {...bsInput} />
+                    <button
+                      type="button"
+                      className={`toggle-btn ${isSnapShot ? 'active' : ''}`}
+                      onClick={() => setIsSnapShot((v) => !v)}
+                    >
+                      Snap Shots
+                    </button>
+                  </div>
+                  <div className="hint">{bsHint}</div>
+                </div>
               </div>
-              <div className="hint">{bsHint}</div>
-            </div>
-
-            <div className="field">
-              <label>Firepower (FP)</label>
-              <input {...fpInput} />
-            </div>
-
-            <div className="field">
-              <label>Models Firing</label>
-              <input {...modelsFiringInput} />
-            </div>
-
-            <div className="field">
-              <label>Strength (S)</label>
-              <input {...strInput} />
-            </div>
-
-            <div className="field">
-              <label>Damage (D)</label>
-              <input {...dmgInput} />
-            </div>
-
-            <div className="divider-label">Special Rules</div>
-            <SpecialRuleList
-              activeRules={activeOffensiveRules}
-              definitions={offensiveDefsForPhase}
-              onAdd={(id) => addRule(id, OFFENSIVE_SPECIAL_RULE_DEFINITIONS)}
-              onUpdate={(id, value) => updateRuleValue(id, value, OFFENSIVE_SPECIAL_RULE_DEFINITIONS)}
-              onRemove={(id) => removeRule(id, OFFENSIVE_SPECIAL_RULE_DEFINITIONS)}
-            />
-          </div>
-
-          <div className="card">
-            <h2>Target Vehicle</h2>
-
-            <div className="field">
-              <label>Armour Value (AV)</label>
-              <select value={armourValue} onChange={(e) => setArmourValue(Number(e.target.value))}>
-                {[10, 11, 12, 13, 14, 15].map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-              <div className="hint">{apHint}</div>
-            </div>
-
-            <div className="field">
-              <label>Hull Points</label>
-              <input {...maxHullPointsInput} />
-            </div>
-
-            <div className="field">
-              <label>Invulnerable Save</label>
-              <select value={invuln} onChange={(e) => setInvuln(Number(e.target.value))}>
-                <option value={7}>None</option>
-                {[2, 3, 4, 5, 6].map((v) => (
-                  <option key={v} value={v}>{v}+</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="field">
-              <label>Cover Save</label>
-              <select value={cover} onChange={(e) => setCover(Number(e.target.value))}>
-                <option value={7}>None</option>
-                {[2, 3, 4, 5, 6].map((v) => (
-                  <option key={v} value={v}>{v}+</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="divider-label">Damage Mitigation — best applicable is used</div>
-            <SpecialRuleList
-              activeRules={activeMitigationRules}
-              definitions={mitigationDefsForPhase}
-              onAdd={(id) => addRule(id, DAMAGE_MITIGATION_DEFINITIONS)}
-              onUpdate={(id, value) => updateRuleValue(id, value, DAMAGE_MITIGATION_DEFINITIONS)}
-              onRemove={(id) => removeRule(id, DAMAGE_MITIGATION_DEFINITIONS)}
-            />
-            <div className="hint">{mitigationHint}</div>
-
-            <div className="divider-label">Target Special Rules</div>
-            <SpecialRuleList
-              activeRules={activeDefensiveRules}
-              definitions={defensiveDefsForPhase}
-              onAdd={(id) => addRule(id, DEFENSIVE_SPECIAL_RULE_DEFINITIONS)}
-              onUpdate={(id, value) => updateRuleValue(id, value, DEFENSIVE_SPECIAL_RULE_DEFINITIONS)}
-              onRemove={(id) => removeRule(id, DEFENSIVE_SPECIAL_RULE_DEFINITIONS)}
-            />
-          </div>
-        </div>
-
-        <div className="charts">
-          {/* Stage 1 */}
-          <div className="stage-head">
-            <div><div className="num">Stage 01 &mdash; Ballistic Skill</div><h2>Hits Scored</h2></div>
-            <div className="mean"><span className="m-label">Expected</span><span className="m-val">{fmtNum(mean(distHits))}</span></div>
-          </div>
-          <div className="chart-wrap">
-            <BarChart
-              series={[{ id: 'main', data: distHits, color: COLORS.hits, label: 'Hits' }]}
-              hidden={hiddenSeries.hits || {}}
-              onToggle={(id) => toggleSeries('hits', id)}
-            />
-          </div>
-
-          {/* Stage 2 */}
-          <div className="stage-head">
-            <div><div className="num">Stage 02 &mdash; Armour Penetration Test</div><h2>Glancing &amp; Penetrating Hits</h2></div>
-            <div className="mean-group">
-              <div className="mean"><span className="m-label">Expected Glances</span><span className="m-val">{fmtNum(mean(distGlance))}</span></div>
-              <div className="mean"><span className="m-label">Expected Penetrates</span><span className="m-val">{fmtNum(mean(distPenetrate))}</span></div>
-            </div>
-          </div>
-          <div className="chart-wrap">
-            <BarChart
-              series={[
-                { id: 'glance', data: distGlance, color: COLORS.glance, label: 'Glancing Hits' },
-                { id: 'penetrate', data: distPenetrate, color: COLORS.penetrate, label: 'Penetrating Hits' },
-              ]}
-              stacked
-              hidden={hiddenSeries.penetration || {}}
-              onToggle={(id) => toggleSeries('penetration', id)}
-            />
-          </div>
-
-          {/* Stage 3 */}
-          <div className="stage-head">
-            <div><div className="num">Stage 03 &mdash; Saving Throw</div><h2>Unsaved Results</h2></div>
-            <div className="mean-group">
-              <div className="mean"><span className="m-label">Expected Glances</span><span className="m-val">{fmtNum(mean(distGlanceUnsaved))}</span></div>
-              <div className="mean"><span className="m-label">Expected Penetrates</span><span className="m-val">{fmtNum(mean(distPenetrateUnsaved))}</span></div>
-            </div>
-          </div>
-          <div className="chart-wrap">
-            <BarChart
-              series={[
-                { id: 'glance', data: distGlanceUnsaved, color: COLORS.glance, label: 'Unsaved Glances' },
-                { id: 'penetrate', data: distPenetrateUnsaved, color: COLORS.penetrate, label: 'Unsaved Penetrates' },
-              ]}
-              stacked
-              hidden={hiddenSeries.unsaved || {}}
-              onToggle={(id) => toggleSeries('unsaved', id)}
-            />
-          </div>
-
-          {/* Stage 4 */}
-          <div className="stage-head">
-            <div><div className="num">Stage 04 &mdash; Vehicle Damage Table</div><h2>Hull Points &amp; Status</h2></div>
-            <div className="mean"><span className="m-label">Expected Hull Points Lost</span><span className="m-val">{fmtNum(mean(distHullPoints))}</span></div>
-          </div>
-
-          <div className="toggle-group" role="group" aria-label="Vehicle damage view">
-            <button
-              type="button"
-              className={`toggle-btn ${vehicleView === 'distributive' ? 'active' : ''}`}
-              onClick={() => setVehicleView('distributive')}
-            >
-              Exactly X Hull Points
-            </button>
-            <button
-              type="button"
-              className={`toggle-btn ${vehicleView === 'cumulative' ? 'active' : ''}`}
-              onClick={() => setVehicleView('cumulative')}
-            >
-              At Least X Hull Points
-            </button>
-            <button
-              type="button"
-              className={`toggle-btn ${vehicleView === 'status' ? 'active' : ''}`}
-              onClick={() => setVehicleView('status')}
-            >
-              Status Inflicted
-            </button>
-          </div>
-
-          {vehicleView === 'status' ? (
-            <div className="status-readout">
-              <p className="hint">
-                Stunned, Pinned, and Suppressed are always equally likely — each Glancing Hit splits 1-2 / 3-4 / 5-6 across the three, an even 1-in-3 share.
-              </p>
-              <div className="status-stat"><span className="status-label">Stunned</span><span className="status-val">{fmtPct(statusProbs.stunned)}</span></div>
-              <div className="status-stat"><span className="status-label">Pinned</span><span className="status-val">{fmtPct(statusProbs.pinned)}</span></div>
-              <div className="status-stat"><span className="status-label">Suppressed</span><span className="status-val">{fmtPct(statusProbs.suppressed)}</span></div>
-            </div>
-          ) : (
-            <div className="chart-wrap">
-              <BarChart
-                series={[{ id: 'main', data: hullPointsChartDist, color: COLORS.hullPoints, label: 'Hull Points Removed' }]}
-                hidden={hiddenSeries.hullPoints || {}}
-                onToggle={(id) => toggleSeries('hullPoints', id)}
+              <div className="subgrid">
+                <div className="field">
+                  <label>Firepower (FP)</label>
+                  <input {...fpInput} />
+                </div>
+                <div className="field">
+                  <label>Models Firing</label>
+                  <input {...modelsFiringInput} />
+                </div>
+              </div>
+              <div className="divider-label">Weapon Profile</div>
+              <div className="subgrid">
+                <div className="field">
+                  <label>Strength (S)</label>
+                  <input {...strInput} />
+                </div>
+                <div className="field">
+                  <label>Damage (D)</label>
+                  <input {...dmgInput} />
+                </div>
+              </div>
+              <div className="divider-label">Special Rules</div>
+              <SpecialRuleList
+                activeRules={activeOffensiveRules}
+                definitions={offensiveDefsForPhase}
+                onAdd={(id) => addRule(id, OFFENSIVE_SPECIAL_RULE_DEFINITIONS)}
+                onUpdate={(id, value) => updateRuleValue(id, value, OFFENSIVE_SPECIAL_RULE_DEFINITIONS)}
+                onRemove={(id) => removeRule(id, OFFENSIVE_SPECIAL_RULE_DEFINITIONS)}
               />
             </div>
-          )}
-
-          <div className="readout-strip">
-            <div><div className="rl">Total Dice</div><div className="rv">{totalDice}</div></div>
-            <div><div className="rl">P(Hit)</div><div className="rv">{fmtPct(pHit)}</div></div>
-            <div><div className="rl">P(≥1 HP Lost)</div><div className="rv">{fmtPct(cdfHullPoints[1] ?? 0)}</div></div>
-            <div><div className="rl">P(Destroyed)</div><div className="rv">{fmtPct(distHullPoints[maxHullPoints] ?? 0)}</div></div>
           </div>
+
+          <div className="card">
+            <div className="card-head defender"><span className="dot"></span><span className="tag">Target Vehicle</span></div>
+            <div className="card-body">
+              <div className="subgrid">
+                <div className="field">
+                  <label>Armour Value (AV)</label>
+                  <select value={armourValue} onChange={(e) => setArmourValue(Number(e.target.value))}>
+                    <option value="10">10</option><option value="11">11</option><option value="12">12</option>
+                    <option value="13">13</option><option value="14">14</option><option value="15">15</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Hull Points (HP)</label>
+                  <input {...maxHullPointsInput} />
+                </div>
+              </div>
+              <div className="hint">{apHint}</div>
+              <div className="divider-label">Saves — best applicable is used</div>
+              <div className="field">
+                <label>Invulnerable Save</label>
+                <select value={invuln} onChange={(e) => setInvuln(Number(e.target.value))}>
+                  <option value="2">2+</option><option value="3">3+</option><option value="4">4+</option>
+                  <option value="5">5+</option><option value="6">6+</option><option value="7">None</option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Cover Save</label>
+                <select value={cover} onChange={(e) => setCover(Number(e.target.value))}>
+                  <option value="2">2+</option><option value="3">3+</option><option value="4">4+</option>
+                  <option value="5">5+</option><option value="6">6+</option><option value="7">None</option>
+                </select>
+              </div>
+              <div className="hint">{saveHint}</div>
+              <div className="divider-label">Damage Mitigation — best applicable is used</div>
+              <SpecialRuleList
+                activeRules={activeMitigationRules}
+                definitions={mitigationDefsForPhase}
+                onAdd={(id) => addRule(id, DAMAGE_MITIGATION_DEFINITIONS)}
+                onUpdate={(id, value) => updateRuleValue(id, value, DAMAGE_MITIGATION_DEFINITIONS)}
+                onRemove={(id) => removeRule(id, DAMAGE_MITIGATION_DEFINITIONS)}
+              />
+              <div className="hint">{mitigationHint}</div>
+              <div className="divider-label">Special Rules</div>
+              <SpecialRuleList
+                activeRules={activeDefensiveRules}
+                definitions={defensiveDefsForPhase}
+                onAdd={(id) => addRule(id, DEFENSIVE_SPECIAL_RULE_DEFINITIONS)}
+                onUpdate={(id, value) => updateRuleValue(id, value, DEFENSIVE_SPECIAL_RULE_DEFINITIONS)}
+                onRemove={(id) => removeRule(id, DEFENSIVE_SPECIAL_RULE_DEFINITIONS)}
+              />
+            </div>
+          </div>
+
+        </div>
+
+        <div className="output">
+
+          <div className="stage">
+            <div className="stage-head">
+              <div><div className="num">Stage 01 — Ballistic</div><h2>Hits Scored</h2></div>
+              <div className="mean"><span className="m-label">Expected</span><span className="m-val">{fmtNum(mean(distHits))}</span></div>
+            </div>
+            <div className="stage-body">
+              <div className="chart-wrap">
+                <BarChart
+                  chartId="hits"
+                  series={[{ id: 'main', data: distHits, color: COLORS.hits, label: 'Hits' }]}
+                  hidden={hiddenSeries.hits || {}}
+                  onToggle={(id) => toggleSeries('hits', id)}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="arrow-connector">↓ each hit makes an Armour Penetration test ↓</div>
+
+          <div className="stage">
+            <div className="stage-head">
+              <div><div className="num">Stage 02 — Strength + D6 vs Armour Value</div><h2>Glancing &amp; Penetrating Hits</h2></div>
+              <div className="mean-group">
+                <div className={`mean ${isSeriesHidden('penetration', 'glance') ? 'mean-dimmed' : ''}`}>
+                  <span className="m-label">Expected Glances</span><span className="m-val">{fmtNum(mean(distGlance))}</span>
+                </div>
+                <div className={`mean ${isSeriesHidden('penetration', 'penetrate') ? 'mean-dimmed' : ''}`}>
+                  <span className="m-label">Expected Penetrates</span><span className="m-val">{fmtNum(mean(distPenetrate))}</span>
+                </div>
+              </div>
+            </div>
+            <div className="stage-body">
+              <div className="chart-wrap">
+                <BarChart
+                  chartId="penetration"
+                  series={[
+                    { id: 'glance', value: 1, data: distGlance, color: COLORS.glance, label: 'Glancing Hits' },
+                    { id: 'penetrate', value: 2, data: distPenetrate, color: COLORS.penetrate, label: 'Penetrating Hits' },
+                  ]}
+                  stacked
+                  hidden={hiddenSeries.penetration || {}}
+                  onToggle={(id) => toggleSeries('penetration', id)}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="arrow-connector">↓ each Glancing or Penetrating Hit rolls a save ↓</div>
+
+          <div className="stage">
+            <div className="stage-head">
+              <div><div className="num">Stage 03 — Saving Throw</div><h2>Hits Unsaved</h2></div>
+              <div className="mean-group">
+                <div className={`mean ${isSeriesHidden('unsaved', 'glance') ? 'mean-dimmed' : ''}`}>
+                  <span className="m-label">Expected Glances</span><span className="m-val">{fmtNum(mean(distGlanceUnsaved))}</span>
+                </div>
+                <div className={`mean ${isSeriesHidden('unsaved', 'penetrate') ? 'mean-dimmed' : ''}`}>
+                  <span className="m-label">Expected Penetrates</span><span className="m-val">{fmtNum(mean(distPenetrateUnsaved))}</span>
+                </div>
+              </div>
+            </div>
+            <div className="stage-body">
+              <div className="chart-wrap">
+                <BarChart
+                  chartId="unsaved"
+                  series={[
+                    { id: 'glance', value: 1, data: distGlanceUnsaved, color: COLORS.glance, label: 'Unsaved Glancing Hits' },
+                    { id: 'penetrate', value: 2, data: distPenetrateUnsaved, color: COLORS.penetrate, label: 'Unsaved Penetrating Hits' },
+                  ]}
+                  stacked
+                  hidden={hiddenSeries.unsaved || {}}
+                  onToggle={(id) => toggleSeries('unsaved', id)}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="arrow-connector">↓ unsaved hits damage the vehicle ↓</div>
+
+          <div className="stage final">
+            <div className="stage-head">
+              <div>
+                <div className="num">Stage 04 — Vehicle Damage</div>
+                <h2>
+                  {vehicleView === 'status'
+                    ? 'Status Inflicted'
+                    : `Hull Points Removed — ${vehicleView === 'cumulative' ? 'Cumulative Probability' : 'Probability'}`}
+                </h2>
+              </div>
+              <div className="mean"><span className="m-label">Expected Hull Points</span><span className="m-val">{fmtNum(mean(distHullPoints))}</span></div>
+            </div>
+            <div className="stage-body">
+              <div className="toggle-group" role="group" aria-label="Vehicle damage view">
+                <button
+                  type="button"
+                  className={`toggle-btn ${vehicleView === 'distributive' ? 'active' : ''}`}
+                  onClick={() => setVehicleView('distributive')}
+                >
+                  Exactly X hull points removed
+                </button>
+                <button
+                  type="button"
+                  className={`toggle-btn ${vehicleView === 'cumulative' ? 'active' : ''}`}
+                  onClick={() => setVehicleView('cumulative')}
+                >
+                  At least X hull points removed
+                </button>
+                <button
+                  type="button"
+                  className={`toggle-btn ${vehicleView === 'status' ? 'active' : ''}`}
+                  onClick={() => setVehicleView('status')}
+                >
+                  Status inflicted
+                </button>
+              </div>
+              {vehicleView === 'status' ? (
+                <div className="status-readout">
+                  <div className="hint">
+                    {shock
+                      ? `Shock (${shockLabel}) inflicts ${shockLabel} whenever any hit's unmodified roll is a 5 or 6 — saves and the Armour Penetration test can't stop it, and it never costs a Hull Point. The other two statuses come only from Glancing Hits, an even 1-in-3 share each.`
+                      : 'Stunned, Pinned, and Suppressed are always equally likely — each Glancing Hit splits 1-2 / 3-4 / 5-6 across the three, an even 1-in-3 share.'}
+                  </div>
+                  <div className="status-stat"><span className="status-label">Stunned</span><span className="status-val">{fmtPct(statusProbs.stunned)}</span></div>
+                  <div className="status-stat"><span className="status-label">Pinned</span><span className="status-val">{fmtPct(statusProbs.pinned)}</span></div>
+                  <div className="status-stat"><span className="status-label">Suppressed</span><span className="status-val">{fmtPct(statusProbs.suppressed)}</span></div>
+                </div>
+              ) : (
+                <div className="chart-wrap">
+                  <BarChart
+                    chartId="hullPoints"
+                    series={[{ id: 'main', data: hullPointsChartDist, color: COLORS.hullPoints, label: 'Hull Points Removed' }]}
+                    hidden={hiddenSeries.hullPoints || {}}
+                    onToggle={(id) => toggleSeries('hullPoints', id)}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
         </div>
       </div>
+
+      <footer>
+        Cumulative probability shown for Hull Points is P(Hull Points removed &ge; N) — the chance of removing at least that many, capped at the vehicle's total. Bars for stages 1–3 show the exact probability of each result, marginalised across every possible path through the prior stage. A natural 1 on the Armour Penetration test always fails.
+      </footer>
     </>
   );
 }

@@ -532,27 +532,26 @@ font-family:var(--mono); font-size:13px; padding:6px 8px; border-radius:2px;}
 
 /* ============================================================
    Vehicle shooting page — append to globals.css.
-   Styles the Status Inflicted readout shown in Stage 04 (statuses
-   can't be labelled on BarChart's numeric-index axis, so they're
-   shown as a readout instead). Reuses existing theme variables.
+   Styles the Status Inflicted readout shown in Stage 04. Statuses
+   can't be labelled on BarChart's numeric-index axis, so they are
+   shown as a readout instead. It sits inside .stage-body, which
+   already provides the panel, so it draws no box of its own.
    ============================================================ */
 
 .status-readout{
   display:flex;
   flex-direction:column;
-  gap:10px;
-  padding:16px 18px;
-  margin-bottom:14px;
-  background:var(--panel);
-  border:1px solid var(--border);
-  border-radius:3px;
+  padding:4px 2px 0;
+}
+.status-readout .hint{
+  margin-bottom:8px;
 }
 
 .status-stat{
   display:flex;
   justify-content:space-between;
   align-items:baseline;
-  padding:8px 0;
+  padding:10px 0;
   border-bottom:1px solid var(--border-dim);
 }
 .status-stat:last-child{

@@ -719,7 +719,7 @@ export function sumBucket(buckets, keyName) {
 }
 
 // ============================================================
-// Vehicle shooting support — append to combatMath.js
+// Vehicle shooting support
 //
 // Rule 4: vehicles are hit as per normal shooting attacks, but the wound
 // step is replaced entirely by an Armour Penetration test (d6 + Strength
@@ -731,6 +731,9 @@ export function sumBucket(buckets, keyName) {
 // no longer forces an automatic wound: it still requires a genuine
 // Armour Penetration test, only adding +1 Damage if that test penetrates.
 // ============================================================
+
+// The three Vehicle Damage Table statuses. Shock (X) carries one of these as its value.
+export const VEHICLE_STATUSES = ['stunned', 'pinned', 'suppressed'];
 
 /**
  * Resolves hit and Armour Penetration probabilities for a shooting attack
@@ -744,11 +747,19 @@ export function resolveVehicleAttackProbabilities(hitNeed, S, AV, innateCritX = 
   const critCandidates = [innateCritX, explicitCritX].filter((x) => x !== null);
   const Xcrit = critCandidates.length > 0 ? Math.min(...critCandidates) : null;
 
+  // Shock (X): X is a Vehicle status NAME rather than a number. Matched
+  // case-insensitively; anything unrecognised is ignored rather than guessed at.
+  const shockRule = activeOffensiveRules.find((r) => r.id === 'shock');
+  const shockValue = shockRule ? String(shockRule.value).toLowerCase() : null;
+  const shockStatus = VEHICLE_STATUSES.includes(shockValue) ? shockValue : null;
+
   let pHit, pCriticalHit, pNormalHit;
+  let pShockTrigger = 0; // chance per die that Shock is triggered
 
   if (hitNeed === null) {
     // automatic hit (e.g. BS10): natural roll assumed to be a 6
     pHit = 1;
+    pShockTrigger = shockStatus ? 1 : 0; // natural roll assumed to be a 6, so it always triggers
     const isCritical = Xcrit !== null; // a natural 6 always satisfies any Xcrit <= 6
     pCriticalHit = isCritical ? 1 : 0;
     pNormalHit = isCritical ? 0 : 1;
@@ -774,6 +785,10 @@ export function resolveVehicleAttackProbabilities(hitNeed, S, AV, innateCritX = 
       const isCritical = Xcrit !== null && d >= Xcrit;
       if (isCritical) pCriticalHit += 1 / 6;
       else pNormalHit += 1 / 6;
+      // Shock: this die was a HIT (d >= effHitNeed) and its UNMODIFIED roll was a 5 or 6.
+      // Judged on the natural die, so +1-to-hit rules and Critical Hit lowering the
+      // threshold can let a natural 5 count, but never turn a 4 into a trigger.
+      if (shockStatus && d >= 5) pShockTrigger += 1 / 6;
     }
   }
 
@@ -795,11 +810,23 @@ export function resolveVehicleAttackProbabilities(hitNeed, S, AV, innateCritX = 
     pPenetrateGivenHit = (6 - threshold) / 6;
   }
 
+  // Armourbane: this weapon can never inflict a Glancing Hit — a roll that
+  // would Glance (S + D6 = AV) is a Penetrating Hit instead. Applied AFTER
+  // the normal test, so: a natural 1 still always fails (it never glanced,
+  // so there is nothing to upgrade), a weapon that cannot reach AV still
+  // cannot hurt it, and Critical Hit's +1 Damage applies to an upgraded hit
+  // because it genuinely is a Penetrating Hit.
+  if (activeOffensiveRules.some((r) => r.id === 'armourbane')) {
+    pPenetrateGivenHit += pGlanceGivenHit;
+    pGlanceGivenHit = 0;
+  }
+
   return {
     pHit, hitNeed,
     pGlance: pHit * pGlanceGivenHit,
     pPenetrateNormal: pNormalHit * pPenetrateGivenHit,
     pPenetrateCritical: pCriticalHit * pPenetrateGivenHit,
+    shock: shockStatus ? { status: shockStatus, pTrigger: pShockTrigger, pHit } : null,
   };
 }
 
@@ -907,16 +934,39 @@ export function computeVehicleHullPointDistribution(totalDice, pGlanceUnsaved, p
 
 /**
  * Probability that each Vehicle Damage Table status (Stunned, Pinned,
- * Suppressed) is inflicted at least once during the attack. By symmetry
- * (each status has an identical 1/3 chance per Glancing Hit) all three
- * probabilities are always equal — this isn't a bug, it's a direct
- * consequence of the Vehicle Damage Table's even 1-2/3-4/5-6 split.
+ * Suppressed) is inflicted at least once during the attack.
+ *
+ * Without a `shock` argument the statuses come only from unsaved Glancing
+ * Hits, each splitting an even 1/3 across the three — so all three
+ * probabilities are equal (a consequence of the table's 1-2 / 3-4 / 5-6
+ * split, not a bug).
+ *
+ * Shock (X): pass `shock` (the object returned by
+ * resolveVehicleAttackProbabilities) to add Status X whenever ANY hit's
+ * unmodified roll was a 5 or 6. That is decided at the Hit Test, so saves,
+ * Damage Mitigation and the Armour Penetration test cannot stop it, and it
+ * never costs a Hull Point (the status is gained at the END of the attack,
+ * so it does not interact with Damage Table results within the same
+ * attack). Only the shocked status changes; the other two still come from
+ * Glancing Hits alone.
+ *
+ * Per attacking die, the shocked status is inflicted if the die triggers
+ * Shock, OR it does not but is an unsaved Glancing Hit that rolls X on the
+ * Damage Table. One hit can be both, so the overlap is counted once.
  */
-export function computeStatusInflictedProbability(totalDice, pGlanceUnsaved) {
+export function computeStatusInflictedProbability(totalDice, pGlanceUnsaved, shock = null) {
   const distGlance = binomialPMF(totalDice, pGlanceUnsaved);
   let pInflicted = 0;
   for (let g = 0; g <= totalDice; g++) {
     pInflicted += distGlance[g] * (1 - Math.pow(2 / 3, g));
   }
-  return { stunned: pInflicted, pinned: pInflicted, suppressed: pInflicted };
+  const result = { stunned: pInflicted, pinned: pInflicted, suppressed: pInflicted };
+
+  if (shock && VEHICLE_STATUSES.includes(shock.status) && shock.pTrigger > 0 && shock.pHit > 0) {
+    const pHitNotTriggering = Math.max(0, shock.pHit - shock.pTrigger);
+    const pUnsavedGlanceGivenHit = pGlanceUnsaved / shock.pHit;
+    const q = shock.pTrigger + pHitNotTriggering * (pUnsavedGlanceGivenHit / 3);
+    result[shock.status] = 1 - Math.pow(1 - q, totalDice);
+  }
+  return result;
 }
